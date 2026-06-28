@@ -21,9 +21,9 @@ move_and_collide :: proc(body:^Body, radius:f32, tris:[]Triangle, delta:f32) {
 			diff := center - closest
 			dist := rl.Vector3Length(diff)
 
-			if dist < PLAYER_RADIUS && dist > 0.00001 {
+			if dist < radius && dist > 0.00001 {
 				n := diff / dist
-				push := PLAYER_RADIUS - dist
+				push := radius - dist
 
 				body.position += n * push
 
