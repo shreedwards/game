@@ -21,17 +21,22 @@ World :: struct {
 	floor: rl.Model,
 	tower: rl.Model,
 	spots: [4]rl.Vector3,
+	island: rl.Model,
+
 	tris: [dynamic]Triangle
 }
 
 create_world :: proc() -> World {
 	world: World
 
-	floor_mesh := rl.GenMeshPlane(FLOOR_SIZE, FLOOR_SIZE, 1, 1)
+	floor_mesh := rl.GenMeshPlane(FLOOR_SIZE, FLOOR_SIZE, 4, 4)
 	world.floor = rl.LoadModelFromMesh(floor_mesh)
 
 	tower_mesh := rl.GenMeshCube(TOWER_SIZE.x, TOWER_SIZE.y, TOWER_SIZE.z)
 	world.tower = rl.LoadModelFromMesh(tower_mesh)
+
+	island_mesh := gen_island(45, 45, 7.5)
+	world.island = rl.LoadModelFromMesh(island_mesh)
 
 	world.spots = {
 		{  16.0, 16.0,  16.0 },
@@ -41,6 +46,7 @@ create_world :: proc() -> World {
 	}
 
 	_append_mesh_tris(&world.tris, floor_mesh, rl.Vector3 { })
+	_append_mesh_tris(&world.tris, island_mesh, rl.Vector3 { 125.0, 1.0, 0.0 })
 
 	for spot in world.spots {
 		_append_mesh_tris(&world.tris, tower_mesh, spot)
@@ -51,6 +57,10 @@ create_world :: proc() -> World {
 
 draw_world :: proc(world: ^World) {
 	rl.DrawModel(world.floor, rl.Vector3 { }, 1.0, TILE_COLOR)
+	rl.DrawModelWires(world.floor, rl.Vector3 { }, 1.0, rl.DARKGRAY)
+
+	rl.DrawModel(world.island, rl.Vector3 { 125.0, 1.0, 0.0 }, 1.0, rl.LIGHTGRAY)
+	rl.DrawModelWires(world.island, rl.Vector3 { 125.0, 1.0, 0.0 }, 1.0, rl.DARKGRAY)
 
 	for spot in world.spots {
 		rl.DrawModel(world.tower, spot, 1.0, TOWER_COLOR)
@@ -67,6 +77,7 @@ draw_world :: proc(world: ^World) {
 unload_world :: proc(world: ^World) {
 	rl.UnloadModel(world.floor)
 	rl.UnloadModel(world.tower)
+	rl.UnloadModel(world.island)
 	delete(world.tris)
 }
 

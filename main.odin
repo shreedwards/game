@@ -48,6 +48,7 @@ main :: proc() {
 			if dev_mode {
 				rl.DrawText("DEV", 10, 40, 20, rl.BLACK)
 			}
+
 		rl.EndDrawing()
 	}
 

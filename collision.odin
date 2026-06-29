@@ -43,6 +43,7 @@ move_and_collide :: proc(body:^Body, radius:f32, tris:[]Triangle, delta:f32) {
 
 
 // Derived from Ericson's Real-Time Collision Detection
+@(private="file")
 _closest_point_on_triangle :: proc(p, a, b, c: rl.Vector3) -> rl.Vector3 {
 	ab := b - a
 	ac := c - a
