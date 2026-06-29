@@ -12,6 +12,7 @@ Triangle :: struct {
 
 World :: struct {
 	island: rl.Model,
+	island_text: rl.Texture,
 
 	tris: [dynamic]Triangle
 }
@@ -19,8 +20,14 @@ World :: struct {
 create_world :: proc() -> World {
 	world: World
 
-	island_mesh := gen_island(45, 45, 7.5)
+	island_heights := gen_island_heights(45, 45, 7.5)
+	defer delete(island_heights)
+
+	island_mesh := gen_island_mesh(raw_data(island_heights), 45, 45, 1.0)
 	world.island = rl.LoadModelFromMesh(island_mesh)
+
+	world.island_text = gen_island_texture(raw_data(island_heights), 45, 45)
+	rl.SetMaterialTexture(&world.island.materials[0], .ALBEDO, world.island_text)
 
 	_append_mesh_tris(&world.tris, island_mesh, rl.Vector3 { })
 
@@ -29,8 +36,11 @@ create_world :: proc() -> World {
 
 draw_world :: proc(world: ^World) {
 
-	rl.DrawModel(world.island, rl.Vector3 { }, 1.0, rl.LIGHTGRAY)
-	rl.DrawModelWires(world.island, rl.Vector3 { }, 1.0, rl.DARKGRAY)
+	rl.DrawModel(world.island, rl.Vector3 { }, 1.0, rl.WHITE)
+
+	if dev_mode {
+		rl.DrawModelWires(world.island, rl.Vector3 { }, 1.0, rl.DARKGRAY)
+	}
 
 	rl.DrawSphere(
 		{ 300.0, 300.0, 0.0 },
@@ -41,6 +51,7 @@ draw_world :: proc(world: ^World) {
 
 unload_world :: proc(world: ^World) {
 	rl.UnloadModel(world.island)
+	rl.UnloadTexture(world.island_text)
 	delete(world.tris)
 }
 

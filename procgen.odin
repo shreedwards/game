@@ -33,7 +33,31 @@ STEP_HEIGHT   :: 0.2
 GROUND_LEVEL :: 0.0   // target value in noise space [-1,1]
 GROUND_WIDTH :: 0.15  // half-width of the collapsed band (bigger = wider plane)
 
-gen_island :: proc(width:int, length:int, amplitude:f32) -> rl.Mesh {
+// Texturing
+TEX_RES :: 2048            // baked albedo resolution (px)
+SLOPE_THRESHOLD :: 0.75    // ~half a terrace step (STEP_HEIGHT*amplitude); above detail-noise slope, below a riser
+
+// Grass/dirt boundary warp: offsets the slope-sample position (fractal noise)
+// so the edge meanders instead of snapping to grid cells.
+JITTER_SEED       :: 7
+JITTER_FREQ       :: 0.03   // base wiggle scale; lower = larger, smoother
+JITTER_STRENGTH   :: 0.5    // displacement in grid cells
+JITTER_OCTAVES    :: 3      // more = more ragged, multi-scale edge
+JITTER_LACUNARITY :: 2.0
+JITTER_GAIN       :: 0.5
+
+// Per-texel color variation (fractal noise -> broad patches + fine mottling)
+GRASS_SEED        :: 11
+DIRT_SEED         :: 13
+PALETTE_FREQ      :: 0.1   // base noise step per texel; lower = larger color patches
+PALETTE_OCTAVES   :: 3     // more = more layered detail
+PALETTE_LACUNARITY :: 2.0
+PALETTE_GAIN      :: 0.5   // lower = smoother (less fine speckle)
+
+GRASS :: [3]rl.Color{ {60,110,40,255}, {80,140,55,255}, {105,160,70,255} }
+DIRT  :: [3]rl.Color{ {70,52,34,255},  {96,70,44,255},  {120,90,58,255}  }
+
+gen_island_heights :: proc(width:int, length:int, amplitude:f32) -> [dynamic]f32 {
 	vals : [dynamic]f32
 
 	for x in 0..<width {
@@ -65,7 +89,36 @@ gen_island :: proc(width:int, length:int, amplitude:f32) -> rl.Mesh {
 		}
 	}
 
-	return _gen_mesh(raw_data(vals), width, length, 1.0)
+	return vals
+}
+
+gen_island_texture :: proc(heights:[^]f32, width:int, length:int) -> rl.Texture2D {
+	img := rl.GenImageColor(TEX_RES, TEX_RES, rl.BLANK)
+
+	for py in 0..<TEX_RES {
+		for px in 0..<TEX_RES {
+			fx := f32(px) / f32(TEX_RES) * f32(width  - 1)
+			fz := f32(py) / f32(TEX_RES) * f32(length - 1)
+
+			// warp the sample position (fractal) so the edge meanders
+			ox := _fbm(JITTER_SEED,     f64(px), f64(py), JITTER_OCTAVES, JITTER_FREQ, JITTER_LACUNARITY, JITTER_GAIN) * JITTER_STRENGTH
+			oz := _fbm(JITTER_SEED + 1, f64(px), f64(py), JITTER_OCTAVES, JITTER_FREQ, JITTER_LACUNARITY, JITTER_GAIN) * JITTER_STRENGTH
+
+			slope := _slope_at(heights, width, length, fx + ox, fz + oz)
+			grass := slope < SLOPE_THRESHOLD
+
+			col := grass ? _palette_color(GRASS, GRASS_SEED, px, py) : _palette_color(DIRT, DIRT_SEED, px, py)
+
+			rl.ImageDrawPixel(&img, i32(px), i32(py), col)
+		}
+	}
+
+	tex := rl.LoadTextureFromImage(img)
+
+	rl.UnloadImage(img)
+	rl.SetTextureFilter(tex, .POINT)
+
+	return tex
 }
 
 @(private="file")
@@ -85,8 +138,7 @@ _fbm :: proc(seed:i64, x:f64, z:f64, octs:int, freq:f64, lac:f64, gain:f64) -> f
 	return f32(sum / norm)
 }
 
-@(private="file")
-_gen_mesh :: proc(heights:[^]f32, width:int, length:int, scale:f32) -> rl.Mesh {
+gen_island_mesh :: proc(heights:[^]f32, width:int, length:int, scale:f32) -> rl.Mesh {
 	vertices : [dynamic]f32
 	texcoords : [dynamic]f32
 	normals : [dynamic]f32
@@ -150,9 +202,47 @@ _gen_mesh :: proc(heights:[^]f32, width:int, length:int, scale:f32) -> rl.Mesh {
 }
 
 @(private="file")
+_palette_color :: proc(pal:[3]rl.Color, seed:i64, px:int, py:int) -> rl.Color {
+	n := _fbm(seed, f64(px), f64(py), PALETTE_OCTAVES, PALETTE_FREQ, PALETTE_LACUNARITY, PALETTE_GAIN)
+	t := (n + 1) * 0.5
+	idx := clamp(int(t * f32(len(pal))), 0, len(pal) - 1)
+
+	return pal[idx]
+}
+
+@(private="file")
 _height_at :: proc(heights:[^]f32, width:int, length:int, x:int, z:int) -> f32 {
 	cx := clamp(x, 0, width - 1)
-	cz := clamp(z, 0, width - 1)
+	cz := clamp(z, 0, length - 1)
 
 	return heights[cx * length + cz]
+}
+
+@(private="file")
+_sample_height :: proc(heights:[^]f32, width:int, length:int, fx:f32, fz:f32) -> f32 {
+	cfx := clamp(fx, 0, f32(width  - 1))
+	cfz := clamp(fz, 0, f32(length - 1))
+
+	x0 := int(cfx); z0 := int(cfz)
+	x1 := min(x0 + 1, width  - 1)
+	z1 := min(z0 + 1, length - 1)
+	tx := cfx - f32(x0)
+	tz := cfz - f32(z0)
+
+	h00 := heights[x0*length + z0]
+	h10 := heights[x1*length + z0]
+	h01 := heights[x0*length + z1]
+	h11 := heights[x1*length + z1]
+
+	return math.lerp(math.lerp(h00, h10, tx), math.lerp(h01, h11, tx), tz)
+}
+
+@(private="file")
+_slope_at :: proc(heights:[^]f32, width:int, length:int, fx:f32, fz:f32) -> f32 {
+	D :: f32(0.75)   // central-difference offset in grid cells
+
+	dhdx := _sample_height(heights, width, length, fx+D, fz) - _sample_height(heights, width, length, fx-D, fz)
+	dhdz := _sample_height(heights, width, length, fx, fz+D) - _sample_height(heights, width, length, fx, fz-D)
+
+	return math.sqrt(dhdx*dhdx + dhdz*dhdz)
 }

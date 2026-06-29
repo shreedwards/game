@@ -38,7 +38,7 @@ main :: proc() {
 		}
 
 		rl.BeginDrawing()
-			rl.ClearBackground(rl.RAYWHITE)
+			rl.ClearBackground(rl.SKYBLUE)
 			rl.BeginMode3D(active_cam^)
 				draw_world(&world)
 			rl.EndMode3D()
