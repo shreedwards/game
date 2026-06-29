@@ -103,9 +103,19 @@ _gen_mesh :: proc(heights:[^]f32, width:int, length:int, scale:f32) -> rl.Mesh {
 			append(&texcoords, f32(x) / (f32(width) - 1.0))
 			append(&texcoords, f32(z) / (f32(length) - 1.0))
 
-			append(&normals, 0.0)
-			append(&normals, 1.0)
-			append(&normals, 0.0)
+			hl := _height_at(heights, width, length, x-1, z)
+			hr := _height_at(heights, width, length, x+1, z)
+			hd := _height_at(heights, width, length, x, z-1)
+			hu := _height_at(heights, width, length, x, z+1)
+
+			dhdx := (hr - hl) / (2 * scale)
+			dhdz := (hu - hd) / (2 * scale)
+
+			n := rl.Vector3Normalize({ -dhdx, 1.0, -dhdz })
+
+			append(&normals, n.x)
+			append(&normals, n.y)
+			append(&normals, n.z)
 		}
 	}
 
@@ -137,4 +147,12 @@ _gen_mesh :: proc(heights:[^]f32, width:int, length:int, scale:f32) -> rl.Mesh {
 	rl.UploadMesh(&mesh, false)
 
 	return mesh
+}
+
+@(private="file")
+_height_at :: proc(heights:[^]f32, width:int, length:int, x:int, z:int) -> f32 {
+	cx := clamp(x, 0, width - 1)
+	cz := clamp(z, 0, width - 1)
+
+	return heights[cx * length + cz]
 }

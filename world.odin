@@ -3,13 +3,6 @@ package game
 import "core:c"
 import rl "vendor:raylib"
 
-FLOOR_EXTENT :: 25
-TILE_SIZE :: 5.0
-TILE_COLOR :: rl.GREEN
-TOWER_SIZE :: rl.Vector3 { 16.0, 32.0, 16.0 }
-TOWER_COLOR :: rl.GRAY
-FLOOR_SIZE :: f32(FLOOR_EXTENT) * TILE_SIZE * 2.0
-
 Triangle :: struct {
 	a: rl.Vector3,
 	b: rl.Vector3,
@@ -18,9 +11,6 @@ Triangle :: struct {
 }
 
 World :: struct {
-	floor: rl.Model,
-	tower: rl.Model,
-	spots: [4]rl.Vector3,
 	island: rl.Model,
 
 	tris: [dynamic]Triangle
@@ -29,43 +19,18 @@ World :: struct {
 create_world :: proc() -> World {
 	world: World
 
-	floor_mesh := rl.GenMeshPlane(FLOOR_SIZE, FLOOR_SIZE, 4, 4)
-	world.floor = rl.LoadModelFromMesh(floor_mesh)
-
-	tower_mesh := rl.GenMeshCube(TOWER_SIZE.x, TOWER_SIZE.y, TOWER_SIZE.z)
-	world.tower = rl.LoadModelFromMesh(tower_mesh)
-
 	island_mesh := gen_island(45, 45, 7.5)
 	world.island = rl.LoadModelFromMesh(island_mesh)
 
-	world.spots = {
-		{  16.0, 16.0,  16.0 },
-		{ -16.0, 16.0,  16.0 },
-		{ -16.0, 16.0, -16.0 },
-		{  16.0, 16.0, -16.0 }
-	}
-
-	_append_mesh_tris(&world.tris, floor_mesh, rl.Vector3 { })
-	_append_mesh_tris(&world.tris, island_mesh, rl.Vector3 { 125.0, 1.0, 0.0 })
-
-	for spot in world.spots {
-		_append_mesh_tris(&world.tris, tower_mesh, spot)
-	}
+	_append_mesh_tris(&world.tris, island_mesh, rl.Vector3 { })
 
 	return world
 }
 
 draw_world :: proc(world: ^World) {
-	rl.DrawModel(world.floor, rl.Vector3 { }, 1.0, TILE_COLOR)
-	rl.DrawModelWires(world.floor, rl.Vector3 { }, 1.0, rl.DARKGRAY)
 
-	rl.DrawModel(world.island, rl.Vector3 { 125.0, 1.0, 0.0 }, 1.0, rl.LIGHTGRAY)
-	rl.DrawModelWires(world.island, rl.Vector3 { 125.0, 1.0, 0.0 }, 1.0, rl.DARKGRAY)
-
-	for spot in world.spots {
-		rl.DrawModel(world.tower, spot, 1.0, TOWER_COLOR)
-		rl.DrawModelWires(world.tower, spot, 1.0, rl.DARKGRAY)
-	}
+	rl.DrawModel(world.island, rl.Vector3 { }, 1.0, rl.LIGHTGRAY)
+	rl.DrawModelWires(world.island, rl.Vector3 { }, 1.0, rl.DARKGRAY)
 
 	rl.DrawSphere(
 		{ 300.0, 300.0, 0.0 },
@@ -75,8 +40,6 @@ draw_world :: proc(world: ^World) {
 }
 
 unload_world :: proc(world: ^World) {
-	rl.UnloadModel(world.floor)
-	rl.UnloadModel(world.tower)
 	rl.UnloadModel(world.island)
 	delete(world.tris)
 }
