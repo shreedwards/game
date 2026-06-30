@@ -12,7 +12,11 @@ Triangle :: struct {
 
 World :: struct {
 	island: rl.Model,
-	island_text: rl.Texture,
+	shader: rl.Shader,
+
+	grass_tex: rl.Texture,
+	dirt_tex:  rl.Texture,
+	stone_tex: rl.Texture,
 
 	tris: [dynamic]Triangle
 }
@@ -23,11 +27,22 @@ create_world :: proc() -> World {
 	island_heights := gen_island_heights(45, 45, 7.5)
 	defer delete(island_heights)
 
-	island_mesh := gen_island_mesh(raw_data(island_heights), 45, 45, 1.0)
+	island_bottom := gen_island_underside(raw_data(island_heights), 45, 45, 7.5)
+	defer delete(island_bottom)
+
+	island_mesh := gen_island_mesh(raw_data(island_heights), raw_data(island_bottom), 45, 45, 1.0)
 	world.island = rl.LoadModelFromMesh(island_mesh)
 
-	world.island_text = gen_island_texture(raw_data(island_heights), 45, 45)
-	rl.SetMaterialTexture(&world.island.materials[0], .ALBEDO, world.island_text)
+	// Triplanar shader samples three tileable biome swatches by world position.
+	world.shader = load_island_shader()
+	world.grass_tex = gen_palette_swatch(GRASS, GRASS_SEED)
+	world.dirt_tex  = gen_palette_swatch(DIRT,  DIRT_SEED)
+	world.stone_tex = gen_palette_swatch(STONE, STONE_SEED)
+
+	world.island.materials[0].shader = world.shader
+	rl.SetMaterialTexture(&world.island.materials[0], .ALBEDO,    world.grass_tex) // texture0
+	rl.SetMaterialTexture(&world.island.materials[0], .METALNESS, world.dirt_tex)  // texture1
+	rl.SetMaterialTexture(&world.island.materials[0], .NORMAL,    world.stone_tex) // texture2
 
 	_append_mesh_tris(&world.tris, island_mesh, rl.Vector3 { })
 
@@ -51,7 +66,10 @@ draw_world :: proc(world: ^World) {
 
 unload_world :: proc(world: ^World) {
 	rl.UnloadModel(world.island)
-	rl.UnloadTexture(world.island_text)
+	rl.UnloadShader(world.shader)
+	rl.UnloadTexture(world.grass_tex)
+	rl.UnloadTexture(world.dirt_tex)
+	rl.UnloadTexture(world.stone_tex)
 	delete(world.tris)
 }
 

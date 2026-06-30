@@ -21,7 +21,6 @@ main :: proc() {
 	for !rl.WindowShouldClose() {
 		if dev_mode {
 			update_free_cam()
-
 		} else {
 			update_player(&world)
 		}

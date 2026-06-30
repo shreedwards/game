@@ -55,6 +55,10 @@ _head_lerp := STAND_HEIGHT
 _sensitivity := rl.Vector2 { 0.001, 0.001 }
 
 setup_player :: proc() {
+	player_body.position.x = 20
+	player_body.position.z = 20
+	player_body.position.y = 50
+
 	player_cam.up = { 0.0, 1.0, 0.0 }
 	player_cam.fovy = 60.0
 	player_cam.projection = .PERSPECTIVE
