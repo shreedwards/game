@@ -1,0 +1,625 @@
+package game
+
+import "core:math"
+import "core:math/rand"
+import rl "vendor:raylib"
+
+// Default seed for the world's tree; change it to grow a different tree.
+TREE_SEED :: 7
+
+// Bark swatch: assorted browns coloured by a vertically stretched Voronoi
+// pattern, so each tall, thin cell reads as a streak of wood grain. The sample
+// grid has many cells across (BARK_CELLS_X) but few down (BARK_CELLS_Y), which
+// is what stretches the cells vertically. See gen_bark_swatch.
+BARK_SEED    :: 31
+BARK_CELLS_X :: 80 // thin cells across -> fine grain lines
+BARK_CELLS_Y :: 10  // few tall cells down -> grain runs vertically
+
+BARK_BROWNS :: [?]rl.Color{
+	{  58, 40, 24, 255 },
+	{  82, 55, 33, 255 },
+	{ 101, 67, 33, 255 },
+	{ 120, 85, 52, 255 },
+}
+
+// The leaf swatch isn't a smooth palette like bark; it's spattered foliage.
+// Small, same-sized rects of assorted greens are stamped at random over a
+// transparent swatch, so overlaps clump into leaf clusters and the bare gaps
+// read as holes in the canopy (the tree shader discards them). See
+// gen_leaf_swatch.
+LEAF_SEED     :: 37
+LEAF_RECT_W   :: 7
+LEAF_RECT_H   :: 12
+LEAF_COVERAGE :: 2.5 // total rect area as a multiple of the swatch (overlaps + gaps)
+
+LEAF_GREENS :: [?]rl.Color{
+	{ 40,  90, 38, 255 },
+	{ 56, 120, 46, 255 },
+	{ 74, 140, 58, 255 },
+	{ 96, 160, 72, 255 },
+}
+
+// Flat per-vertex colours written into the mesh colour buffer: plain brown bark
+// on the trunk/branches, plain green leaves on the domes. The tree renders with
+// the shared lit shader, which just tints by this colour - texturing is a clean
+// slate to be rebuilt later (the swatch generators above are kept for that).
+@(private="file")
+BARK_COLOR :: rl.Color{ 101, 67, 33, 255 }
+@(private="file")
+LEAF_COLOR :: rl.Color{ 56, 120, 46, 255 }
+
+// Bakes the leaf swatch: a transparent texture spattered with many small,
+// same-sized rects of random greens. Overlaps build up denser leaf clusters and
+// the gaps stay transparent, so sampled onto the leaf hemispheres (with the tree
+// shader discarding transparent texels) it reads as ragged foliage rather than a
+// solid dome. `seed` makes the spatter deterministic.
+gen_leaf_swatch :: proc(seed: i64) -> rl.Texture2D {
+	img := rl.GenImageColor(SWATCH_RES, SWATCH_RES, rl.BLANK) // fully transparent
+
+	// Local seeded RNG so the spatter is deterministic and doesn't disturb the
+	// program-wide default generator.
+	state := rand.create_u64(u64(seed))
+	context.random_generator = rand.default_random_generator(&state)
+
+	area    := f32(SWATCH_RES * SWATCH_RES) * LEAF_COVERAGE / f32(LEAF_RECT_W * LEAF_RECT_H)
+	count   := int(area)
+	greens  := LEAF_GREENS
+
+	for _ in 0..<count {
+		x := rand.int31_max(SWATCH_RES)
+		y := rand.int31_max(SWATCH_RES)
+		col := greens[rand.int31_max(len(greens))]
+
+		rl.ImageDrawRectangle(&img, x, y, LEAF_RECT_W, LEAF_RECT_H, col)
+	}
+
+	tex := rl.LoadTextureFromImage(img)
+
+	rl.UnloadImage(img)
+	rl.SetTextureFilter(tex, .POINT)
+	rl.SetTextureWrap(tex, .REPEAT)
+
+	return tex
+}
+
+// Bakes the bark swatch: assorted browns laid down by a vertically stretched
+// Voronoi pattern. The sample grid has many cells across but few down, so each
+// Voronoi cell is a tall, thin column; colouring the cells from a few browns
+// turns those columns into vertical wood-grain streaks. Cell indices wrap, so
+// the swatch tiles seamlessly. `seed` makes the grain deterministic.
+gen_bark_swatch :: proc(seed: i64) -> rl.Texture2D {
+	img := rl.GenImageColor(SWATCH_RES, SWATCH_RES, rl.BLANK)
+	browns := BARK_BROWNS
+
+	for py in 0..<SWATCH_RES {
+		for px in 0..<SWATCH_RES {
+			// Cell-space point, stretched so cells are tall and thin: a unit cell
+			// spans 1/BARK_CELLS_X of the width but 1/BARK_CELLS_Y of the height.
+			cx := f32(px) / f32(SWATCH_RES) * BARK_CELLS_X
+			cy := f32(py) / f32(SWATCH_RES) * BARK_CELLS_Y
+
+			id := _bark_cell(seed, cx, cy, BARK_CELLS_X, BARK_CELLS_Y)
+			rl.ImageDrawPixel(&img, i32(px), i32(py), browns[id %% len(browns)])
+		}
+	}
+
+	tex := rl.LoadTextureFromImage(img)
+
+	rl.UnloadImage(img)
+	rl.SetTextureFilter(tex, .POINT)
+	rl.SetTextureWrap(tex, .REPEAT)
+
+	return tex
+}
+
+// Colour index of the nearest Voronoi feature point's cell at (x,y) in cell
+// space. Cells wrap on cells_x/cells_y so the pattern tiles seamlessly. Each
+// cell's feature point is jittered inside it by a hash, and the winning cell's
+// hash also selects the colour.
+@(private="file")
+_bark_cell :: proc(seed: i64, x: f32, y: f32, cells_x: int, cells_y: int) -> int {
+	ix := int(math.floor(x))
+	iy := int(math.floor(y))
+
+	best    := f32(1e30)
+	best_id := 0
+
+	for dy in -1..=1 {
+		for dx in -1..=1 {
+			cxi := ix + dx
+			cyi := iy + dy
+
+			// Wrap the cell index so feature points match across swatch edges.
+			h := _hash(seed, cxi %% cells_x, cyi %% cells_y)
+
+			// Feature point: cell origin + hashed [0,1) jitter.
+			fx := f32(cxi) + f32(h & 0xFFFF) / 65536.0
+			fy := f32(cyi) + f32((h >> 16) & 0xFFFF) / 65536.0
+
+			d := (fx - x) * (fx - x) + (fy - y) * (fy - y)
+			if d < best {
+				best = d
+				best_id = int(h >> 8) // decorrelate the colour from the jitter bits
+			}
+		}
+	}
+
+	return best_id
+}
+
+// Small deterministic integer hash -> u32, keyed by (seed, a, b).
+@(private="file")
+_hash :: proc(seed: i64, a: int, b: int) -> u32 {
+	h := u32(seed) + u32(a) * 374761393 + u32(b) * 668265263
+	h = (h ~ (h >> 13)) * 1274126177
+	h = h ~ (h >> 16)
+	return h
+}
+
+@(private="file")
+MAX_NODES :: 4
+
+@(private="file")
+MAX_CHILDREN :: 2
+
+@(private="file")
+SPLIT_CHANCE :: 0.5
+
+@(private="file")
+MIN_LENGTH :: 2.0
+
+@(private="file")
+MAX_LENGTH :: 4.0
+
+// Depth weighting for branch length: the random MIN_LENGTH..MAX_LENGTH is scaled
+// by a factor blended from TRUNK_LENGTH_SCALE at the root to TIP_LENGTH_SCALE at
+// the tips. Biasing the tip factor above the trunk factor moves length out of
+// the trunk and into the upper branches.
+@(private="file")
+TRUNK_LENGTH_SCALE :: 0.8
+
+@(private="file")
+TIP_LENGTH_SCALE :: 1.0
+
+// Trunk radius at the root; branches taper toward the tips with depth.
+@(private="file")
+BASE_RADIUS :: 1.0
+
+// Number of sides on each branch ring.
+@(private="file")
+SIDES :: 8
+
+// How far the primary (continuing) child may bend off the parent heading.
+@(private="file")
+PRIMARY_BEND :: 0.2
+
+// Angular range the secondary child forks away from the parent heading.
+@(private="file")
+FORK_MIN :: 0.3
+@(private="file")
+FORK_MAX :: 0.6
+
+// Secondary branches are thinner than the primary continuation.
+@(private="file")
+SECONDARY_RADIUS :: 0.7
+
+// Lower bound on cos(half-angle) when mitering a ring, so sharp turns don't
+// blow the corrected radius up to infinity.
+@(private="file")
+MITER_MIN :: 0.5
+
+// Leaf hemisphere radius as a random multiple of the branch tip radius.
+@(private="file")
+LEAF_MIN_SCALE :: 15.0
+@(private="file")
+LEAF_MAX_SCALE :: 20.0
+
+// Latitude bands on each leaf hemisphere (longitude reuses SIDES).
+@(private="file")
+LEAF_STACKS :: 4
+
+Node :: struct {
+	position:   rl.Vector3,
+	radius:     f32,
+	leaf_scale: f32, // random leaf size for this node's tip, drawn at gen time
+	children:   [MAX_CHILDREN]^Node
+}
+
+// Grows a tree from `seed` and returns its uploaded mesh, ready for
+// LoadModelFromMesh. The intermediate node graph is built, skinned, and freed
+// internally, so callers only make this one call. The same seed always yields
+// the same tree.
+create_tree :: proc(seed: u64) -> rl.Mesh {
+	root := _grow_tree(seed)
+	defer _free_tree(root)
+
+	return _tree_mesh(root)
+}
+
+// Builds the node graph for `seed`. A seeded generator is installed into the
+// context so every random draw during generation (_branch, _length, _deviate,
+// _leaf_scale) is deterministic, without touching the program-wide default RNG.
+@(private="file")
+_grow_tree :: proc(seed: u64) -> ^Node {
+	state := rand.create_u64(seed)
+	context.random_generator = rand.default_random_generator(&state)
+
+	root := new_clone(Node {
+		position   = { 0.0, 0.0, 0.0 },
+		radius     = _radius(0),
+		leaf_scale = _leaf_scale()
+	})
+
+	_branch(root, { 0.0, 1.0, 0.0 }, 0)
+
+	return root
+}
+
+// Recursively frees every node in the graph.
+@(private="file")
+_free_tree :: proc(root: ^Node) {
+	if root == nil {
+		return
+	}
+
+	for child in root.children {
+		_free_tree(child)
+	}
+
+	free(root)
+}
+
+// Grows the tree from `root`, which is heading in unit direction `dir`. The
+// primary child (children[0]) continues roughly along `dir` so it reads as the
+// main branch; the secondary child (children[1]) forks off at a wide angle on
+// the opposite side and is treated as a separate branch by the mesher.
+@(private="file")
+_branch :: proc(root:^Node, dir:rl.Vector3, count:int) {
+
+	if count >= MAX_NODES {
+		return
+	}
+
+	length := _length(count)
+
+	// Random azimuth for the bend/fork plane around the current heading.
+	azimuth := rand.float32_range(0.0, 2.0 * math.PI)
+
+	// Primary: small deviation from the parent heading -> continuous trunk.
+	bend := rand.float32_range(0.0, PRIMARY_BEND)
+	primary_dir := _deviate(dir, bend, azimuth)
+
+	primary_child := new_clone(Node {
+		position   = root.position + primary_dir * length,
+		radius     = _radius(count + 1),
+		leaf_scale = _leaf_scale()
+	})
+
+	root.children[0] = primary_child
+
+	_branch(primary_child, primary_dir, count + 1)
+
+	// The root (node 0) never forks: it only grows the trunk straight up.
+	// Forking begins at node 1 and above.
+	if count > 0 && rand.float32() >= SPLIT_CHANCE {
+		// Secondary: real fork, wide angle off the heading and on the opposite
+		// side from the primary bend so the two branches swing clear.
+		fork := rand.float32_range(FORK_MIN, FORK_MAX)
+		secondary_dir := _deviate(dir, fork, azimuth + math.PI)
+
+		secondary_child := new_clone(Node {
+			position   = root.position + secondary_dir * length,
+			radius     = _radius(count + 1) * SECONDARY_RADIUS,
+			leaf_scale = _leaf_scale()
+		})
+
+		root.children[1] = secondary_child
+
+		_branch(secondary_child, secondary_dir, count + 1)
+	}
+}
+
+// Random branch length, weighted by depth so the upper branches get more length
+// than the trunk (see TRUNK_LENGTH_SCALE / TIP_LENGTH_SCALE).
+@(private="file")
+_length :: proc(count: int) -> f32 {
+	t := f32(count) / f32(MAX_NODES) // 0 at the root .. toward 1 at the tips
+	scale := TRUNK_LENGTH_SCALE + (TIP_LENGTH_SCALE - TRUNK_LENGTH_SCALE) * t
+	return rand.float32_range(MIN_LENGTH, MAX_LENGTH) * scale
+}
+
+// Random leaf-size multiple, drawn during (seeded) generation so leaf sizes are
+// part of the deterministic tree rather than re-rolled at mesh time.
+@(private="file")
+_leaf_scale :: proc() -> f32 {
+	return rand.float32_range(LEAF_MIN_SCALE, LEAF_MAX_SCALE)
+}
+
+// Rotates `dir` by polar angle `theta` away from itself, around the azimuth
+// `phi` in the plane perpendicular to `dir`. Returns a unit vector.
+@(private="file")
+_deviate :: proc(dir: rl.Vector3, theta: f32, phi: f32) -> rl.Vector3 {
+	right, forward := _basis(dir)
+	radial := right * math.cos(phi) + forward * math.sin(phi)
+	return rl.Vector3Normalize(dir * math.cos(theta) + radial * math.sin(theta))
+}
+
+// An arbitrary orthonormal basis in the plane perpendicular to `axis`.
+@(private="file")
+_basis :: proc(axis: rl.Vector3) -> (right: rl.Vector3, forward: rl.Vector3) {
+	helper := rl.Vector3 { 0, 1, 0 }
+	if abs(axis.y) > 0.99 {
+		helper = rl.Vector3 { 1, 0, 0 }
+	}
+	right = rl.Vector3Normalize(rl.Vector3CrossProduct(helper, axis))
+	forward = rl.Vector3CrossProduct(axis, right)
+	return
+}
+
+// Branch radius for a node at the given depth: thickest at the root, tapering
+// toward the tips but never collapsing to zero (so tip rings stay valid).
+@(private="file")
+_radius :: proc(count: int) -> f32 {
+	return BASE_RADIUS * f32(MAX_NODES + 1 - count) / f32(MAX_NODES + 1)
+}
+
+// Builds a single mesh for the whole tree and uploads it. The tree is split
+// into spines (a node plus its chain of primary children); each spine is
+// skinned as one continuous tube so joints along the main branch are seamless.
+// Secondary forks are separate spines whose base is embedded inside the parent
+// tube, so they read as branches colliding into and through the main branch.
+// Follows the same manual buffer-building convention as _island_mesh.
+@(private="file")
+_tree_mesh :: proc(root: ^Node) -> rl.Mesh {
+	vertices : [dynamic]f32
+	texcoords : [dynamic]f32
+	normals : [dynamic]f32
+	colors : [dynamic]u8   // per-vertex flat colour (see BARK_COLOR / LEAF_COLOR)
+	indices : [dynamic]u16
+
+	_skin_branch(root, nil, &vertices, &texcoords, &normals, &colors, &indices)
+
+	mesh := rl.Mesh {
+		vertexCount   = i32(len(vertices) / 3),
+		triangleCount = i32(len(indices) / 3),
+
+		vertices  = raw_data(vertices),
+		texcoords = raw_data(texcoords),
+		normals   = raw_data(normals),
+		colors    = raw_data(colors),
+		indices   = raw_data(indices)
+	}
+
+	rl.UploadMesh(&mesh, false)
+
+	return mesh
+}
+
+// Skins the spine that starts at `start` and follows the primary-child chain,
+// then recurses into every secondary fork found along it. When `parent` is set
+// (a fork), the spine gets an extra base point pushed back inside the parent
+// tube so its open end is hidden and it overlaps the main branch.
+@(private="file")
+_skin_branch :: proc(
+	start: ^Node,
+	parent: ^Node,
+	vertices: ^[dynamic]f32,
+	texcoords: ^[dynamic]f32,
+	normals: ^[dynamic]f32,
+	colors: ^[dynamic]u8,
+	indices: ^[dynamic]u16
+) {
+	if start == nil {
+		return
+	}
+
+	// Collect the chain of nodes along the primary children.
+	nodes : [dynamic]^Node
+	defer delete(nodes)
+
+	for n := start; n != nil; n = n.children[0] {
+		append(&nodes, n)
+	}
+
+	// Build the polyline (points + radii) to skin.
+	points : [dynamic]rl.Vector3
+	radii  : [dynamic]f32
+	defer delete(points)
+	defer delete(radii)
+
+	if parent != nil {
+		// Embed the base inside the parent tube, behind the fork node.
+		first_dir := rl.Vector3Normalize(start.position - parent.position)
+		append(&points, parent.position - first_dir * 0.3 * parent.radius)
+		append(&radii, start.radius)
+	}
+
+	for n in nodes {
+		append(&points, n.position)
+		append(&radii, n.radius)
+	}
+
+	_skin_tube(points[:], radii[:], vertices, texcoords, normals, colors, indices, BARK_COLOR)
+
+	// Cap this branch's tip with a leaf hemisphere, facing along the tip.
+	np := len(points)
+	if np >= 2 {
+		tip := nodes[len(nodes) - 1]
+		tip_dir := rl.Vector3Normalize(points[np - 1] - points[np - 2])
+		_append_leaf(points[np - 1], tip_dir, radii[np - 1], tip.leaf_scale, vertices, texcoords, normals, colors, indices, LEAF_COLOR)
+	}
+
+	// Every secondary child along the chain starts its own embedded spine.
+	for n in nodes {
+		_skin_branch(n.children[1], n, vertices, texcoords, normals, colors, indices)
+	}
+}
+
+// Appends a hemisphere of foliage at a branch tip: dome centered at `center`,
+// bulging along unit `axis` (the branch's outgoing direction). Its radius is the
+// branch radius times `leaf_scale` (drawn at generation time), so bigger
+// branches get bigger leaves and the size stays deterministic per seed.
+@(private="file")
+_append_leaf :: proc(
+	center: rl.Vector3,
+	axis: rl.Vector3,
+	branch_radius: f32,
+	leaf_scale: f32,
+	vertices: ^[dynamic]f32,
+	texcoords: ^[dynamic]f32,
+	normals: ^[dynamic]f32,
+	colors: ^[dynamic]u8,
+	indices: ^[dynamic]u16,
+	color: rl.Color
+) {
+	radius := branch_radius * leaf_scale
+	right, forward := _basis(axis)
+
+	// Pull the dome center back by one radius so its round apex (pointing
+	// outward, away from the branch) lands exactly on the tip. The dome then
+	// opens back down over the branch, so the branch enters it and the tip
+	// meets the inner apex (the innermost face) instead of floating in a mouth.
+	origin := center - axis * radius * 0.9
+
+	base := u16(len(vertices^) / 3)
+
+	// Rings from the pole (theta 0, pointing outward) down to the equator
+	// (theta pi/2), so the branch end touches the innermost face. The dome is a
+	// flat colour for now, so the verts carry no UVs (0,0).
+	for st in 0..=LEAF_STACKS {
+		theta := f32(st) / f32(LEAF_STACKS) * (math.PI / 2.0)
+		for sl in 0..<SIDES {
+			phi := f32(sl) / f32(SIDES) * 2.0 * math.PI
+			radial := right * math.cos(phi) + forward * math.sin(phi)
+			dir := radial * math.sin(theta) + axis * math.cos(theta)
+			p := origin + dir * radius
+
+			append(vertices, p.x, p.y, p.z)
+			append(normals, dir.x, dir.y, dir.z)
+			append(texcoords, 0, 0)
+			append(colors, color.r, color.g, color.b, color.a)
+		}
+	}
+
+	for st in 0..<LEAF_STACKS {
+		for sl in 0..<SIDES {
+			next := (sl + 1) % SIDES
+
+			a  := base + u16(st * SIDES + sl)
+			an := base + u16(st * SIDES + next)
+			b  := base + u16((st + 1) * SIDES + sl)
+			bn := base + u16((st + 1) * SIDES + next)
+
+			// Wound CCW so the dome faces outward.
+			append(indices, a, b, bn)
+			append(indices, a, bn, an)
+		}
+	}
+}
+
+// Skins a polyline of `points` (with per-point `radii`) into a continuous tube:
+// one ring of SIDES verts per point, connected point-to-point. A parallel-
+// transported frame keeps rings from twisting, and interior rings are mitered
+// (oriented on the bend bisector, radius scaled by 1/cos) so corners stay flush.
+@(private="file")
+_skin_tube :: proc(
+	points: []rl.Vector3,
+	radii: []f32,
+	vertices: ^[dynamic]f32,
+	texcoords: ^[dynamic]f32,
+	normals: ^[dynamic]f32,
+	colors: ^[dynamic]u8,
+	indices: ^[dynamic]u16,
+	color: rl.Color
+) {
+	n := len(points)
+	if n < 2 {
+		return
+	}
+
+	prev_tan  : rl.Vector3
+	right     : rl.Vector3
+	prev_base : u16
+
+	for i in 0..<n {
+		// Tangent: segment direction at the ends, bend bisector in between.
+		tan : rl.Vector3
+		switch {
+		case i == 0:
+			tan = rl.Vector3Normalize(points[1] - points[0])
+		case i == n - 1:
+			tan = rl.Vector3Normalize(points[i] - points[i - 1])
+		case:
+			d0 := rl.Vector3Normalize(points[i] - points[i - 1])
+			d1 := rl.Vector3Normalize(points[i + 1] - points[i])
+			tan = d0 + d1
+			tan = rl.Vector3Length(tan) < 0.0001 ? d1 : rl.Vector3Normalize(tan)
+		}
+
+		// Parallel-transport the frame from the previous ring to avoid twist.
+		if i == 0 {
+			right, _ = _basis(tan)
+		} else {
+			right = _rotate_between(right, prev_tan, tan)
+			right = rl.Vector3Normalize(right - tan * rl.Vector3DotProduct(right, tan))
+		}
+		up := rl.Vector3Normalize(rl.Vector3CrossProduct(tan, right))
+
+		// Miter: widen interior rings so the bend is covered without pinching.
+		r := radii[i]
+		if i != 0 && i != n - 1 {
+			in_dir := rl.Vector3Normalize(points[i] - points[i - 1])
+			cos_half := max(rl.Vector3DotProduct(tan, in_dir), MITER_MIN)
+			r /= cos_half
+		}
+
+		base := u16(len(vertices^) / 3)
+
+		// One ring of SIDES verts. Flat colour for now, so no UVs (0,0).
+		for j in 0..<SIDES {
+			angle := f32(j) / f32(SIDES) * 2.0 * math.PI
+			dir := right * math.cos(angle) + up * math.sin(angle)
+			p := points[i] + dir * r
+
+			append(vertices, p.x, p.y, p.z)
+			append(normals, dir.x, dir.y, dir.z)
+			append(texcoords, 0, 0)
+			append(colors, color.r, color.g, color.b, color.a)
+		}
+
+		if i > 0 {
+			for j in 0..<SIDES {
+				next := (j + 1) % SIDES
+
+				bi := prev_base + u16(j)
+				bn := prev_base + u16(next)
+				ti := base + u16(j)
+				tn := base + u16(next)
+
+				// Two triangles per side quad, wound CCW so faces point out.
+				append(indices, bi, bn, tn)
+				append(indices, bi, tn, ti)
+			}
+		}
+
+		prev_tan  = tan
+		prev_base = base
+	}
+}
+
+// Rotates `v` by the minimal rotation that carries unit vector `from` onto unit
+// vector `to` (Rodrigues' formula). Used to parallel-transport the ring frame.
+@(private="file")
+_rotate_between :: proc(v: rl.Vector3, from: rl.Vector3, to: rl.Vector3) -> rl.Vector3 {
+	axis := rl.Vector3CrossProduct(from, to)
+	s := rl.Vector3Length(axis)
+	c := rl.Vector3DotProduct(from, to)
+
+	if s < 0.0001 {
+		return v // parallel: no rotation needed
+	}
+	axis = axis / s
+
+	// cos(angle) = c, sin(angle) = s for unit from/to.
+	return v * c + rl.Vector3CrossProduct(axis, v) * s + axis * rl.Vector3DotProduct(axis, v) * (1.0 - c)
+}

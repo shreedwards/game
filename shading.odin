@@ -52,6 +52,11 @@ uniform sampler2D texture1; // dirt
 uniform sampler2D texture2; // stone
 uniform vec4 colDiffuse;
 
+uniform vec3 sunDir;   // direction the sunlight travels (world space)
+uniform vec3 sunColor; // sun colour / intensity
+uniform vec3 ambient;  // ambient / sky fill so shadowed faces aren't black
+uniform vec3 viewPos;  // camera world position (for specular)
+
 out vec4 finalColor;
 
 const float SCALE   = 0.12;  // texture tiles per world unit
@@ -138,10 +143,26 @@ void main() {
 	vec3 top = mix(dirt, grass, grassW);
 	vec3 col = mix(top, stone, stoneW);
 
-	finalColor = vec4(col, 1.0) * colDiffuse * fragColor;
+	// --- Directional sun lighting (Blinn-Phong) on the FLAT face normal ---
+	// gn is the true per-face normal (from screen-space derivatives); using it
+	// instead of the smooth vertex normal gives faceted / flat shading. Align it
+	// to the smooth normal so it faces outward regardless of screen winding.
+	vec3 N = dot(gn, fragNormal) < 0.0 ? -gn : gn;
+	vec3 L = normalize(-sunDir);              // fragment -> sun
+	float diff = max(dot(N, L), 0.0);
+
+	vec3 V = normalize(viewPos - fragPosition);
+	vec3 H = normalize(L + V);
+	float spec = pow(max(dot(N, H), 0.0), 24.0) * 0.15;
+
+	vec3 lit = col * (ambient + sunColor * diff) + sunColor * spec;
+
+	finalColor = vec4(lit, 1.0) * colDiffuse * fragColor;
 }
 `
 
 load_island_shader :: proc() -> rl.Shader {
-	return rl.LoadShaderFromMemory(ISLAND_VS, ISLAND_FS)
+	shader := rl.LoadShaderFromMemory(ISLAND_VS, ISLAND_FS)
+	bind_lighting(shader)
+	return shader
 }

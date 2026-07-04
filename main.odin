@@ -13,6 +13,8 @@ main :: proc() {
 
 	world := create_world()
 
+	grain := create_grain(rl.GetScreenWidth(), rl.GetScreenHeight())
+
 	setup_player()
 
 	rl.DisableCursor()
@@ -36,11 +38,18 @@ main :: proc() {
 			dev_mode = !dev_mode
 		}
 
-		rl.BeginDrawing()
-			rl.ClearBackground(rl.SKYBLUE)
+		// Render the scene into the supersampled off-screen target...
+		begin_grain(&grain)
+			rl.ClearBackground(rl.DARKGRAY)
 			rl.BeginMode3D(active_cam^)
 				draw_world(&world)
 			rl.EndMode3D()
+		end_grain(&grain)
+
+		// ...then present it to the screen through the film-grain shader. HUD is
+		// drawn afterwards so it stays crisp and grain-free.
+		rl.BeginDrawing()
+			present_grain(&grain)
 
 			rl.DrawFPS(10, 10)
 
@@ -51,6 +60,7 @@ main :: proc() {
 		rl.EndDrawing()
 	}
 
+	unload_grain(&grain)
 	unload_world(&world)
 	rl.CloseWindow()
 }

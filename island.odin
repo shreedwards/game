@@ -80,7 +80,28 @@ GRASS :: [3]rl.Color{ {60,110,40,255}, {80,140,55,255}, {105,160,70,255} }
 DIRT  :: [3]rl.Color{ {70,52,34,255},  {96,70,44,255},  {120,90,58,255}  }
 STONE :: [3]rl.Color{ {72,70,78,255},  {104,102,110,255}, {138,136,146,255} }
 
-gen_island_heights :: proc(width:int, length:int, amplitude:f32) -> [dynamic]f32 {
+// Island grid dimensions and vertical scale.
+ISLAND_WIDTH     :: 45
+ISLAND_LENGTH    :: 45
+ISLAND_AMPLITUDE :: 7.5 // height field amplitude (top + underside)
+ISLAND_SCALE     :: 1.0 // horizontal spacing between grid cells
+
+// Generates the full floating-island mesh and uploads it, ready for
+// LoadModelFromMesh. Builds the top height field, hangs the underside below it,
+// then merges both surfaces and the connecting rim walls into one mesh. The
+// intermediate height buffers are freed internally, so callers make one call.
+gen_island :: proc() -> rl.Mesh {
+	heights := _island_heights(ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_AMPLITUDE)
+	defer delete(heights)
+
+	bottom := _island_underside(raw_data(heights), ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_AMPLITUDE)
+	defer delete(bottom)
+
+	return _island_mesh(raw_data(heights), raw_data(bottom), ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_SCALE)
+}
+
+@(private="file")
+_island_heights :: proc(width:int, length:int, amplitude:f32) -> [dynamic]f32 {
 	vals : [dynamic]f32
 
 	for x in 0..<width {
@@ -95,7 +116,7 @@ gen_island_heights :: proc(width:int, length:int, amplitude:f32) -> [dynamic]f32
 
 			// Island falloff: a noise-perturbed radial mask shapes the rim
 			// into a meandering blob. Cells fully past the coast are culled
-			// in gen_island_mesh; here we just slope the rim down a bit.
+			// in _island_mesh; here we just slope the rim down a bit.
 			base -= f32(_island_mask(x_, z_)) * ISLAND_DEPTH
 
 			// Bias: collapse a band around GROUND_LEVEL flat, then close the
@@ -123,7 +144,8 @@ gen_island_heights :: proc(width:int, length:int, amplitude:f32) -> [dynamic]f32
 // Underside of the floating island: hung below the top surface, thin at the
 // rim and bulging deepest at the center, with ridged noise carving downward
 // stalactite spikes. Returned y-values are absolute (already below `top`).
-gen_island_underside :: proc(top:[^]f32, width:int, length:int, amplitude:f32) -> [dynamic]f32 {
+@(private="file")
+_island_underside :: proc(top:[^]f32, width:int, length:int, amplitude:f32) -> [dynamic]f32 {
 	vals : [dynamic]f32
 
 	for x in 0..<width {
@@ -349,7 +371,8 @@ _wall :: proc(vertices:^[dynamic]f32, texcoords:^[dynamic]f32, normals:^[dynamic
 // vertical walls that close the rim between them. `top` and `bottom` share the
 // same width x length grid; bottom vertices are stored after all top vertices
 // (offset N), so index `i` on top maps to `i + N` on the bottom.
-gen_island_mesh :: proc(top:[^]f32, bottom:[^]f32, width:int, length:int, scale:f32) -> rl.Mesh {
+@(private="file")
+_island_mesh :: proc(top:[^]f32, bottom:[^]f32, width:int, length:int, scale:f32) -> rl.Mesh {
 	vertices : [dynamic]f32
 	texcoords : [dynamic]f32
 	normals : [dynamic]f32
