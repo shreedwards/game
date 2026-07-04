@@ -15,10 +15,9 @@ import rl "vendor:raylib"
 // The grain itself is a static, screen-sized noise texture baked once at start
 // (not procedural per-frame): it maps 1:1 onto screen pixels and never changes,
 // so there's no animation, no drift, and no precision artifacts. GRAIN_INTENSITY
-// is the main knob: per-pixel noise is most visible on large flat close-up
-// surfaces (reads as fuzz), so keep it subtle.
+// is the main knob
 
-GRAIN_INTENSITY :: 0.04 // 0 = off; subtle. Higher looks fuzzy on close flat surfaces
+GRAIN_INTENSITY :: 0.03 // 0 = off
 GRAIN_SEED      :: 1234 // seed for the one-time noise bake
 SSAA_SCALE      :: 2    // supersample factor; 2 = smoother edges, 1 = crisp but aliased
 

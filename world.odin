@@ -14,14 +14,18 @@ Triangle :: struct {
 World :: struct {
 	island: rl.Model,
 
-	tree: rl.Model,
+	tree_bark:   rl.Model, // trunk + branch tubes (opaque bark swatch)
+	tree_leaves: rl.Model, // canopy domes (cutout leaf swatch)
 
 	shader:      rl.Shader, // triplanar terrain shader (island only)
 	lit:         rl.Shader, // reusable Blinn-Phong shader for ordinary props
+	leaf:        rl.Shader, // lit + alpha cutout for the leaf swatch's gaps
 
 	grass_tex: rl.Texture,
 	dirt_tex:  rl.Texture,
 	stone_tex: rl.Texture,
+	bark_tex:  rl.Texture,
+	leaf_tex:  rl.Texture,
 
 	tris: [dynamic]Triangle
 }
@@ -51,15 +55,25 @@ create_world :: proc() -> World {
 
 	_append_mesh_tris(&world.tris, island_mesh, rl.Vector3 { })
 
-	tree_mesh := create_tree(TREE_SEED)
-	world.tree = rl.LoadModelFromMesh(tree_mesh)
+	bark_mesh, leaf_mesh := create_tree(TREE_SEED)
+	world.tree_bark   = rl.LoadModelFromMesh(bark_mesh)
+	world.tree_leaves = rl.LoadModelFromMesh(leaf_mesh)
 
-	// Plain, untextured tree for now: flat brown bark / green leaves baked into
-	// the mesh's vertex colours, drawn with the shared lit shader. Texturing is a
-	// clean slate to be rebuilt.
-	apply_shader(world.tree, world.lit)
+	// Bark tubes are opaque and use the plain lit shader; the leaf domes use
+	// the cutout variant so the leaf swatch's transparent gaps become holes in
+	// the canopy. Both sample their generated swatch as the albedo map, with
+	// UVs baked into the meshes at constant world texel size.
+	world.leaf     = load_leaf_shader()
+	world.bark_tex = gen_bark_swatch(BARK_SEED)
+	world.leaf_tex = gen_leaf_swatch(LEAF_SEED)
 
-	_append_mesh_tris(&world.tris, tree_mesh, rl.Vector3 { 20.0, 0.0, 20.0 })
+	apply_shader(world.tree_bark,   world.lit)
+	apply_shader(world.tree_leaves, world.leaf)
+	rl.SetMaterialTexture(&world.tree_bark.materials[0],   .ALBEDO, world.bark_tex)
+	rl.SetMaterialTexture(&world.tree_leaves.materials[0], .ALBEDO, world.leaf_tex)
+
+	_append_mesh_tris(&world.tris, bark_mesh, rl.Vector3 { 20.0, 0.0, 20.0 })
+	_append_mesh_tris(&world.tris, leaf_mesh, rl.Vector3 { 20.0, 0.0, 20.0 })
 
 	return world
 }
@@ -68,30 +82,37 @@ draw_world :: proc(world: ^World) {
 
 	update_lighting(world.shader, active_cam.position)
 	update_lighting(world.lit,    active_cam.position)
+	update_lighting(world.leaf,   active_cam.position)
 
 	rl.DrawModel(world.island, rl.Vector3 { }, 1.0, rl.WHITE)
 
 	// Tree is a hollow, open-ended mesh: render both faces so it doesn't cull
-	// away where we see its inside. Bark/leaf colour comes from the tree shader,
-	// so tint white to leave the sampled swatches untouched.
+	// away where we see its inside. Bark/leaf colour comes from the sampled
+	// swatches, so tint white to leave them untouched.
 	rlgl.DisableBackfaceCulling()
-	rl.DrawModel(world.tree, rl.Vector3 { 20.0, -1.0, 20.0 }, 1.0, rl.WHITE)
+	rl.DrawModel(world.tree_bark,   rl.Vector3 { 20.0, -1.0, 20.0 }, 1.0, rl.WHITE)
+	rl.DrawModel(world.tree_leaves, rl.Vector3 { 20.0, -1.0, 20.0 }, 1.0, rl.WHITE)
 	rlgl.EnableBackfaceCulling()
 
 	if dev_mode {
-		rl.DrawModelWires(world.island, rl.Vector3 { }, 1.0, rl.DARKGRAY)
-		rl.DrawModelWires(world.tree,   rl.Vector3 { 20.0, -1.0, 20.0 }, 1.0, rl.DARKGRAY)
+		rl.DrawModelWires(world.island,      rl.Vector3 { }, 1.0, rl.DARKGRAY)
+		rl.DrawModelWires(world.tree_bark,   rl.Vector3 { 20.0, -1.0, 20.0 }, 1.0, rl.DARKGRAY)
+		rl.DrawModelWires(world.tree_leaves, rl.Vector3 { 20.0, -1.0, 20.0 }, 1.0, rl.DARKGRAY)
 	}
 }
 
 unload_world :: proc(world: ^World) {
 	rl.UnloadModel(world.island)
-	rl.UnloadModel(world.tree)
+	rl.UnloadModel(world.tree_bark)
+	rl.UnloadModel(world.tree_leaves)
 	rl.UnloadShader(world.shader)
 	rl.UnloadShader(world.lit)
+	rl.UnloadShader(world.leaf)
 	rl.UnloadTexture(world.grass_tex)
 	rl.UnloadTexture(world.dirt_tex)
 	rl.UnloadTexture(world.stone_tex)
+	rl.UnloadTexture(world.bark_tex)
+	rl.UnloadTexture(world.leaf_tex)
 	delete(world.tris)
 }
 

@@ -25,12 +25,12 @@ BARK_BROWNS :: [?]rl.Color{
 // The leaf swatch isn't a smooth palette like bark; it's spattered foliage.
 // Small, same-sized rects of assorted greens are stamped at random over a
 // transparent swatch, so overlaps clump into leaf clusters and the bare gaps
-// read as holes in the canopy (the tree shader discards them). See
+// read as holes in the canopy (the leaf shader discards them). See
 // gen_leaf_swatch.
 LEAF_SEED     :: 37
 LEAF_RECT_W   :: 7
 LEAF_RECT_H   :: 12
-LEAF_COVERAGE :: 2.5 // total rect area as a multiple of the swatch (overlaps + gaps)
+LEAF_COVERAGE :: 5 // total rect area as a multiple of the swatch (overlaps + gaps)
 
 LEAF_GREENS :: [?]rl.Color{
 	{ 40,  90, 38, 255 },
@@ -39,18 +39,16 @@ LEAF_GREENS :: [?]rl.Color{
 	{ 96, 160, 72, 255 },
 }
 
-// Flat per-vertex colours written into the mesh colour buffer: plain brown bark
-// on the trunk/branches, plain green leaves on the domes. The tree renders with
-// the shared lit shader, which just tints by this colour - texturing is a clean
-// slate to be rebuilt later (the swatch generators above are kept for that).
-@(private="file")
-BARK_COLOR :: rl.Color{ 101, 67, 33, 255 }
-@(private="file")
-LEAF_COLOR :: rl.Color{ 56, 120, 46, 255 }
+// Texel size in world units. Tree UVs are always world distances divided by
+// the swatch's world size (SWATCH_RES texels), never stretched to fit a face:
+// texels stay the same size no matter how big a face is, and each face just
+// crops its window out of the (repeating) swatch.
+BARK_TEXEL :: 0.05 // world units per bark texel
+LEAF_TEXEL :: 0.05 // world units per leaf texel
 
 // Bakes the leaf swatch: a transparent texture spattered with many small,
 // same-sized rects of random greens. Overlaps build up denser leaf clusters and
-// the gaps stay transparent, so sampled onto the leaf hemispheres (with the tree
+// the gaps stay transparent, so sampled onto the leaf hemispheres (with the leaf
 // shader discarding transparent texels) it reads as ragged foliage rather than a
 // solid dome. `seed` makes the spatter deterministic.
 gen_leaf_swatch :: proc(seed: i64) -> rl.Texture2D {
@@ -225,11 +223,14 @@ Node :: struct {
 	children:   [MAX_CHILDREN]^Node
 }
 
-// Grows a tree from `seed` and returns its uploaded mesh, ready for
-// LoadModelFromMesh. The intermediate node graph is built, skinned, and freed
-// internally, so callers only make this one call. The same seed always yields
-// the same tree.
-create_tree :: proc(seed: u64) -> rl.Mesh {
+// Grows a tree from `seed` and returns its two uploaded meshes - bark
+// (trunk/branch tubes) and leaves (canopy domes) - each ready for
+// LoadModelFromMesh. They are separate meshes so the leaves can render with
+// the alpha-cutout leaf shader (and the leaf swatch) while the bark stays
+// opaque (with the bark swatch). The intermediate node graph is built,
+// skinned, and freed internally, so callers only make this one call. The same
+// seed always yields the same tree.
+create_tree :: proc(seed: u64) -> (bark: rl.Mesh, leaves: rl.Mesh) {
 	root := _grow_tree(seed)
 	defer _free_tree(root)
 
@@ -363,31 +364,26 @@ _radius :: proc(count: int) -> f32 {
 	return BASE_RADIUS * f32(MAX_NODES + 1 - count) / f32(MAX_NODES + 1)
 }
 
-// Builds a single mesh for the whole tree and uploads it. The tree is split
-// into spines (a node plus its chain of primary children); each spine is
-// skinned as one continuous tube so joints along the main branch are seamless.
-// Secondary forks are separate spines whose base is embedded inside the parent
-// tube, so they read as branches colliding into and through the main branch.
-// Follows the same manual buffer-building convention as _island_mesh.
+// Vertex/index streams for one mesh under construction. Follows the same
+// manual buffer-building convention as _island_mesh.
 @(private="file")
-_tree_mesh :: proc(root: ^Node) -> rl.Mesh {
-	vertices : [dynamic]f32
-	texcoords : [dynamic]f32
-	normals : [dynamic]f32
-	colors : [dynamic]u8   // per-vertex flat colour (see BARK_COLOR / LEAF_COLOR)
-	indices : [dynamic]u16
+_Buffers :: struct {
+	vertices:  [dynamic]f32,
+	texcoords: [dynamic]f32,
+	normals:   [dynamic]f32,
+	indices:   [dynamic]u16
+}
 
-	_skin_branch(root, nil, &vertices, &texcoords, &normals, &colors, &indices)
-
+@(private="file")
+_upload_mesh :: proc(b: ^_Buffers) -> rl.Mesh {
 	mesh := rl.Mesh {
-		vertexCount   = i32(len(vertices) / 3),
-		triangleCount = i32(len(indices) / 3),
+		vertexCount   = i32(len(b.vertices) / 3),
+		triangleCount = i32(len(b.indices) / 3),
 
-		vertices  = raw_data(vertices),
-		texcoords = raw_data(texcoords),
-		normals   = raw_data(normals),
-		colors    = raw_data(colors),
-		indices   = raw_data(indices)
+		vertices  = raw_data(b.vertices),
+		texcoords = raw_data(b.texcoords),
+		normals   = raw_data(b.normals),
+		indices   = raw_data(b.indices)
 	}
 
 	rl.UploadMesh(&mesh, false)
@@ -395,20 +391,28 @@ _tree_mesh :: proc(root: ^Node) -> rl.Mesh {
 	return mesh
 }
 
+// Builds and uploads the tree's two meshes: bark tubes and leaf domes. The
+// tree is split into spines (a node plus its chain of primary children); each
+// spine is skinned as one continuous tube so joints along the main branch are
+// seamless. Secondary forks are separate spines whose base is embedded inside
+// the parent tube, so they read as branches colliding into and through the
+// main branch.
+@(private="file")
+_tree_mesh :: proc(root: ^Node) -> (bark_mesh: rl.Mesh, leaf_mesh: rl.Mesh) {
+	bark : _Buffers
+	leaf : _Buffers
+
+	_skin_branch(root, nil, &bark, &leaf)
+
+	return _upload_mesh(&bark), _upload_mesh(&leaf)
+}
+
 // Skins the spine that starts at `start` and follows the primary-child chain,
 // then recurses into every secondary fork found along it. When `parent` is set
 // (a fork), the spine gets an extra base point pushed back inside the parent
 // tube so its open end is hidden and it overlaps the main branch.
 @(private="file")
-_skin_branch :: proc(
-	start: ^Node,
-	parent: ^Node,
-	vertices: ^[dynamic]f32,
-	texcoords: ^[dynamic]f32,
-	normals: ^[dynamic]f32,
-	colors: ^[dynamic]u8,
-	indices: ^[dynamic]u16
-) {
+_skin_branch :: proc(start: ^Node, parent: ^Node, bark: ^_Buffers, leaf: ^_Buffers) {
 	if start == nil {
 		return
 	}
@@ -439,19 +443,19 @@ _skin_branch :: proc(
 		append(&radii, n.radius)
 	}
 
-	_skin_tube(points[:], radii[:], vertices, texcoords, normals, colors, indices, BARK_COLOR)
+	_skin_tube(points[:], radii[:], bark)
 
 	// Cap this branch's tip with a leaf hemisphere, facing along the tip.
 	np := len(points)
 	if np >= 2 {
 		tip := nodes[len(nodes) - 1]
 		tip_dir := rl.Vector3Normalize(points[np - 1] - points[np - 2])
-		_append_leaf(points[np - 1], tip_dir, radii[np - 1], tip.leaf_scale, vertices, texcoords, normals, colors, indices, LEAF_COLOR)
+		_append_leaf(points[np - 1], tip_dir, radii[np - 1], tip.leaf_scale, leaf)
 	}
 
 	// Every secondary child along the chain starts its own embedded spine.
 	for n in nodes {
-		_skin_branch(n.children[1], n, vertices, texcoords, normals, colors, indices)
+		_skin_branch(n.children[1], n, bark, leaf)
 	}
 }
 
@@ -459,18 +463,20 @@ _skin_branch :: proc(
 // bulging along unit `axis` (the branch's outgoing direction). Its radius is the
 // branch radius times `leaf_scale` (drawn at generation time), so bigger
 // branches get bigger leaves and the size stays deterministic per seed.
+//
+// Texturing: every quad of the dome gets its own four verts and a flat planar
+// mapping of the leaf swatch, anchored to the quad's bottom (lowest-in-world)
+// edge - u runs along that edge, v rises perpendicular to it in the face
+// plane, so the swatch's leaf rects sit upright with their bottoms parallel to
+// the face's bottom edge. UVs are world distances over LEAF_TEXEL, so texel
+// size is constant and each face just crops its patch of the swatch.
 @(private="file")
 _append_leaf :: proc(
 	center: rl.Vector3,
 	axis: rl.Vector3,
 	branch_radius: f32,
 	leaf_scale: f32,
-	vertices: ^[dynamic]f32,
-	texcoords: ^[dynamic]f32,
-	normals: ^[dynamic]f32,
-	colors: ^[dynamic]u8,
-	indices: ^[dynamic]u16,
-	color: rl.Color
+	b: ^_Buffers
 ) {
 	radius := branch_radius * leaf_scale
 	right, forward := _basis(axis)
@@ -481,23 +487,22 @@ _append_leaf :: proc(
 	// meets the inner apex (the innermost face) instead of floating in a mouth.
 	origin := center - axis * radius * 0.9
 
-	base := u16(len(vertices^) / 3)
+	tile := f32(SWATCH_RES) * LEAF_TEXEL // world size of one full swatch repeat
 
-	// Rings from the pole (theta 0, pointing outward) down to the equator
-	// (theta pi/2), so the branch end touches the innermost face. The dome is a
-	// flat colour for now, so the verts carry no UVs (0,0).
+	// Dome lattice, rings from the pole (theta 0, pointing outward) down to the
+	// equator (theta pi/2), so the branch end touches the innermost face.
+	pts  : [LEAF_STACKS + 1][SIDES]rl.Vector3
+	dirs : [LEAF_STACKS + 1][SIDES]rl.Vector3
+
 	for st in 0..=LEAF_STACKS {
 		theta := f32(st) / f32(LEAF_STACKS) * (math.PI / 2.0)
 		for sl in 0..<SIDES {
 			phi := f32(sl) / f32(SIDES) * 2.0 * math.PI
 			radial := right * math.cos(phi) + forward * math.sin(phi)
 			dir := radial * math.sin(theta) + axis * math.cos(theta)
-			p := origin + dir * radius
 
-			append(vertices, p.x, p.y, p.z)
-			append(normals, dir.x, dir.y, dir.z)
-			append(texcoords, 0, 0)
-			append(colors, color.r, color.g, color.b, color.a)
+			dirs[st][sl] = dir
+			pts[st][sl]  = origin + dir * radius
 		}
 	}
 
@@ -505,41 +510,83 @@ _append_leaf :: proc(
 		for sl in 0..<SIDES {
 			next := (sl + 1) % SIDES
 
-			a  := base + u16(st * SIDES + sl)
-			an := base + u16(st * SIDES + next)
-			b  := base + u16((st + 1) * SIDES + sl)
-			bn := base + u16((st + 1) * SIDES + next)
+			// Quad corners: p0/p1 on the pole-side ring, p2/p3 on the ring below.
+			p0 := pts[st][sl]
+			p1 := pts[st][next]
+			p2 := pts[st + 1][sl]
+			p3 := pts[st + 1][next]
 
-			// Wound CCW so the dome faces outward.
-			append(indices, a, b, bn)
-			append(indices, a, bn, an)
+			// Bottom edge = whichever ring edge sits lower in the world. The
+			// dome usually points up, making that the equator-side ring, but a
+			// tilted branch can flip it.
+			bottom0, bottom1 := p2, p3
+			top0 := p0
+			if p0.y + p1.y < p2.y + p3.y {
+				bottom0, bottom1 = p0, p1
+				top0 = p2
+			}
+
+			// At the pole ring the "edge" is a single point; align to the real
+			// (opposite) edge instead.
+			if rl.Vector3LengthSqr(bottom1 - bottom0) < 0.0001 {
+				bottom0, bottom1, top0 = top0, top0 == p0 ? p1 : p3, bottom0
+			}
+
+			// In-face frame anchored on the bottom edge: ex along it, ey away
+			// from it toward the top edge, in the face plane.
+			ex := rl.Vector3Normalize(bottom1 - bottom0)
+			up := top0 - bottom0
+			ey := rl.Vector3Normalize(up - ex * rl.Vector3DotProduct(up, ex))
+
+			base := u16(len(b.vertices) / 3)
+
+			quad_p := [4]rl.Vector3 { p0, p1, p2, p3 }
+			quad_n := [4]rl.Vector3 { dirs[st][sl], dirs[st][next], dirs[st + 1][sl], dirs[st + 1][next] }
+
+			for k in 0..<4 {
+				p := quad_p[k]
+				n := quad_n[k]
+				rel := p - bottom0
+
+				append(&b.vertices, p.x, p.y, p.z)
+				append(&b.normals, n.x, n.y, n.z)
+				append(&b.texcoords,
+					rl.Vector3DotProduct(rel, ex) / tile,
+					rl.Vector3DotProduct(rel, ey) / tile)
+			}
+
+			// Wound CCW so the dome faces outward (same winding as the old
+			// shared-vertex quads).
+			append(&b.indices, base, base + 2, base + 3)
+			append(&b.indices, base, base + 3, base + 1)
 		}
 	}
 }
 
 // Skins a polyline of `points` (with per-point `radii`) into a continuous tube:
-// one ring of SIDES verts per point, connected point-to-point. A parallel-
-// transported frame keeps rings from twisting, and interior rings are mitered
-// (oriented on the bend bisector, radius scaled by 1/cos) so corners stay flush.
+// one ring of SIDES+1 verts per point (the last duplicates the first so the
+// texture can wrap), connected point-to-point. A parallel-transported frame
+// keeps rings from twisting, and interior rings are mitered (oriented on the
+// bend bisector, radius scaled by 1/cos) so corners stay flush.
+//
+// Texturing: v is the accumulated world arc length along the spine, so the
+// bark swatch's vertical grain runs down the branch; u is the world distance
+// walked around the ring's actual circumference. Both are divided by the
+// swatch's world size (BARK_TEXEL per texel), so texel size is constant
+// regardless of branch girth or segment length - faces crop, never stretch.
 @(private="file")
-_skin_tube :: proc(
-	points: []rl.Vector3,
-	radii: []f32,
-	vertices: ^[dynamic]f32,
-	texcoords: ^[dynamic]f32,
-	normals: ^[dynamic]f32,
-	colors: ^[dynamic]u8,
-	indices: ^[dynamic]u16,
-	color: rl.Color
-) {
+_skin_tube :: proc(points: []rl.Vector3, radii: []f32, b: ^_Buffers) {
 	n := len(points)
 	if n < 2 {
 		return
 	}
 
+	tile := f32(SWATCH_RES) * BARK_TEXEL // world size of one full swatch repeat
+
 	prev_tan  : rl.Vector3
 	right     : rl.Vector3
 	prev_base : u16
+	along     : f32 // world arc length from the spine base
 
 	for i in 0..<n {
 		// Tangent: segment direction at the ends, bend bisector in between.
@@ -573,32 +620,35 @@ _skin_tube :: proc(
 			r /= cos_half
 		}
 
-		base := u16(len(vertices^) / 3)
+		if i > 0 {
+			along += rl.Vector3Length(points[i] - points[i - 1])
+		}
 
-		// One ring of SIDES verts. Flat colour for now, so no UVs (0,0).
-		for j in 0..<SIDES {
+		base := u16(len(b.vertices) / 3)
+
+		// One ring of SIDES+1 verts; the seam vert repeats the first position
+		// with the full-circumference u so the swatch wraps around the ring.
+		circumference := 2.0 * math.PI * r
+		for j in 0..=SIDES {
 			angle := f32(j) / f32(SIDES) * 2.0 * math.PI
 			dir := right * math.cos(angle) + up * math.sin(angle)
 			p := points[i] + dir * r
 
-			append(vertices, p.x, p.y, p.z)
-			append(normals, dir.x, dir.y, dir.z)
-			append(texcoords, 0, 0)
-			append(colors, color.r, color.g, color.b, color.a)
+			append(&b.vertices, p.x, p.y, p.z)
+			append(&b.normals, dir.x, dir.y, dir.z)
+			append(&b.texcoords, f32(j) / f32(SIDES) * circumference / tile, along / tile)
 		}
 
 		if i > 0 {
 			for j in 0..<SIDES {
-				next := (j + 1) % SIDES
-
 				bi := prev_base + u16(j)
-				bn := prev_base + u16(next)
+				bn := prev_base + u16(j + 1)
 				ti := base + u16(j)
-				tn := base + u16(next)
+				tn := base + u16(j + 1)
 
 				// Two triangles per side quad, wound CCW so faces point out.
-				append(indices, bi, bn, tn)
-				append(indices, bi, tn, ti)
+				append(&b.indices, bi, bn, tn)
+				append(&b.indices, bi, tn, ti)
 			}
 		}
 

@@ -40,7 +40,7 @@ main :: proc() {
 
 		// Render the scene into the supersampled off-screen target...
 		begin_grain(&grain)
-			rl.ClearBackground(rl.DARKGRAY)
+			rl.ClearBackground(rl.LIGHTGRAY)
 			rl.BeginMode3D(active_cam^)
 				draw_world(&world)
 			rl.EndMode3D()
