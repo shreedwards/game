@@ -1,9 +1,13 @@
-package game
+package island
 
 import "core:math"
 import noise "core:math/noise"
 
 import rl "vendor:raylib"
+
+// The *_SEED constants below are OFFSETS added to the island seed, giving each
+// noise layer its own decorrelated seed while the whole island stays fully
+// determined by the one seed passed to gen_ground.
 
 // Domain warp
 WARP_SEED     :: 1
@@ -62,46 +66,32 @@ STALAC_LACUNARITY :: 2.0
 STALAC_GAIN       :: 0.5
 STALAC_STRENGTH   :: 0.85  // stalactite spike length (noise units)
 
-// Texturing: each biome is a small tileable swatch the triplanar shader
-// samples by world position (see island.fs). No per-location baking anymore;
-// grass/dirt/stone are chosen in-shader from the world normal.
-SWATCH_RES :: 256          // swatch resolution (px), tiled across the world
-SWATCH_FREQ :: 6.0         // noise patches per swatch; higher = finer mottle
-
-// Per-texel color variation (fractal noise -> broad patches + fine mottling)
-GRASS_SEED        :: 11
-DIRT_SEED         :: 13
-STONE_SEED        :: 29
-PALETTE_OCTAVES   :: 3     // more = more layered detail
-PALETTE_LACUNARITY :: 2.0
-PALETTE_GAIN      :: 0.5   // lower = smoother (less fine speckle)
-
-GRASS :: [3]rl.Color{ {60,110,40,255}, {80,140,55,255}, {105,160,70,255} }
-DIRT  :: [3]rl.Color{ {70,52,34,255},  {96,70,44,255},  {120,90,58,255}  }
-STONE :: [3]rl.Color{ {72,70,78,255},  {104,102,110,255}, {138,136,146,255} }
-
 // Island grid dimensions and vertical scale.
 ISLAND_WIDTH     :: 45
 ISLAND_LENGTH    :: 45
 ISLAND_AMPLITUDE :: 7.5 // height field amplitude (top + underside)
 ISLAND_SCALE     :: 1.0 // horizontal spacing between grid cells
 
-// Generates the full floating-island mesh and uploads it, ready for
-// LoadModelFromMesh. Builds the top height field, hangs the underside below it,
-// then merges both surfaces and the connecting rim walls into one mesh. The
-// intermediate height buffers are freed internally, so callers make one call.
-gen_island :: proc() -> rl.Mesh {
-	heights := _island_heights(ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_AMPLITUDE)
+// Generates the full floating-island ground mesh for `seed` and uploads it,
+// ready for LoadModelFromMesh. Builds the top height field, hangs the underside
+// below it, then merges both surfaces and the connecting rim walls into one
+// mesh. The intermediate height buffers are freed internally, so callers make
+// one call. All noise layers derive their seeds from `seed` (see the *_SEED
+// offsets above), so the same seed always yields the same ground.
+// Texturing is the triplanar ground shader's job (it samples tileable biome
+// swatches by world position); no UVs or colors are baked per location.
+gen_ground :: proc(seed: i64) -> rl.Mesh {
+	heights := _island_heights(seed, ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_AMPLITUDE)
 	defer delete(heights)
 
-	bottom := _island_underside(raw_data(heights), ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_AMPLITUDE)
+	bottom := _island_underside(seed, raw_data(heights), ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_AMPLITUDE)
 	defer delete(bottom)
 
-	return _island_mesh(raw_data(heights), raw_data(bottom), ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_SCALE)
+	return _island_mesh(seed, raw_data(heights), raw_data(bottom), ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_SCALE)
 }
 
 @(private="file")
-_island_heights :: proc(width:int, length:int, amplitude:f32) -> [dynamic]f32 {
+_island_heights :: proc(seed:i64, width:int, length:int, amplitude:f32) -> [dynamic]f32 {
 	vals : [dynamic]f32
 
 	for x in 0..<width {
@@ -109,15 +99,15 @@ _island_heights :: proc(width:int, length:int, amplitude:f32) -> [dynamic]f32 {
 			x_ := f64(x) / f64(width)
 			z_ := f64(z) / f64(length)
 
-			wx := x_ + f64(noise.noise_2d(WARP_SEED, { x_*WARP_FREQ, z_*WARP_FREQ })) * WARP_STRENGTH
-			wz := z_ + f64(noise.noise_2d(WARP_SEED, { x_*WARP_FREQ, z_*WARP_FREQ })) * WARP_STRENGTH
+			wx := x_ + f64(noise.noise_2d(seed + WARP_SEED, { x_*WARP_FREQ, z_*WARP_FREQ })) * WARP_STRENGTH
+			wz := z_ + f64(noise.noise_2d(seed + WARP_SEED, { x_*WARP_FREQ, z_*WARP_FREQ })) * WARP_STRENGTH
 
-			base := _fbm(NOISE_SEED, wx, wz, BASE_OCTAVES, BASE_FREQ, BASE_LACUNARITY, BASE_GAIN)
+			base := _fbm(seed + NOISE_SEED, wx, wz, BASE_OCTAVES, BASE_FREQ, BASE_LACUNARITY, BASE_GAIN)
 
 			// Island falloff: a noise-perturbed radial mask shapes the rim
 			// into a meandering blob. Cells fully past the coast are culled
 			// in _island_mesh; here we just slope the rim down a bit.
-			base -= f32(_island_mask(x_, z_)) * ISLAND_DEPTH
+			base -= f32(_island_mask(seed, x_, z_)) * ISLAND_DEPTH
 
 			// Bias: collapse a band around GROUND_LEVEL flat, then close the
 			// gap so terraces above/below stay contiguous.
@@ -132,7 +122,7 @@ _island_heights :: proc(width:int, length:int, amplitude:f32) -> [dynamic]f32 {
 
 			level := math.floor(biased * TERRACE_STEPS)
 			h := f32(level) * STEP_HEIGHT
-			detail := _fbm(NOISE_SEED, x_, z_, DETAIL_OCTAVES, DETAIL_FREQ, DETAIL_LACUNARITY, DETAIL_GAIN) * DETAIL_STRENGTH
+			detail := _fbm(seed + NOISE_SEED, x_, z_, DETAIL_OCTAVES, DETAIL_FREQ, DETAIL_LACUNARITY, DETAIL_GAIN) * DETAIL_STRENGTH
 
 			append(&vals, (h + detail) * amplitude)
 		}
@@ -145,7 +135,7 @@ _island_heights :: proc(width:int, length:int, amplitude:f32) -> [dynamic]f32 {
 // rim and bulging deepest at the center, with ridged noise carving downward
 // stalactite spikes. Returned y-values are absolute (already below `top`).
 @(private="file")
-_island_underside :: proc(top:[^]f32, width:int, length:int, amplitude:f32) -> [dynamic]f32 {
+_island_underside :: proc(seed:i64, top:[^]f32, width:int, length:int, amplitude:f32) -> [dynamic]f32 {
 	vals : [dynamic]f32
 
 	for x in 0..<width {
@@ -155,9 +145,9 @@ _island_underside :: proc(top:[^]f32, width:int, length:int, amplitude:f32) -> [
 
 			// 1 deep inland, 0 at the coastline: drives how far the
 			// underside hangs and fades the spikes out toward the rim.
-			profile := clamp(1.0 - _island_mask(x_, z_) / AIR_CUTOFF, 0.0, 1.0)
+			profile := clamp(1.0 - _island_mask(seed, x_, z_) / AIR_CUTOFF, 0.0, 1.0)
 
-			ridge := f64(_ridged(STALAC_SEED, x_, z_, STALAC_OCTAVES, STALAC_FREQ, STALAC_LACUNARITY, STALAC_GAIN))
+			ridge := f64(_ridged(seed + STALAC_SEED, x_, z_, STALAC_OCTAVES, STALAC_FREQ, STALAC_LACUNARITY, STALAC_GAIN))
 
 			hang   := profile * BOTTOM_DEPTH
 			stalac := profile * ridge * STALAC_STRENGTH
@@ -170,34 +160,6 @@ _island_underside :: proc(top:[^]f32, width:int, length:int, amplitude:f32) -> [
 	return vals
 }
 
-// Bakes one seamlessly-tileable biome swatch (fractal palette mottle) for the
-// triplanar shader to sample by world position. Tileability comes from
-// evaluating the noise on a 4D torus, so opposite edges of the swatch match.
-gen_palette_swatch :: proc(pal:[3]rl.Color, seed:i64) -> rl.Texture2D {
-	img := rl.GenImageColor(SWATCH_RES, SWATCH_RES, rl.BLANK)
-
-	for py in 0..<SWATCH_RES {
-		for px in 0..<SWATCH_RES {
-			u := f64(px) / f64(SWATCH_RES)
-			v := f64(py) / f64(SWATCH_RES)
-
-			n := _tile_fbm(seed, u, v, PALETTE_OCTAVES, SWATCH_FREQ, PALETTE_LACUNARITY, PALETTE_GAIN)
-			t := (n + 1) * 0.5
-			idx := clamp(int(t * f32(len(pal))), 0, len(pal) - 1)
-
-			rl.ImageDrawPixel(&img, i32(px), i32(py), pal[idx])
-		}
-	}
-
-	tex := rl.LoadTextureFromImage(img)
-
-	rl.UnloadImage(img)
-	rl.SetTextureFilter(tex, .POINT)
-	rl.SetTextureWrap(tex, .REPEAT)
-
-	return tex
-}
-
 @(private="file")
 _smoothstep :: proc(e0:f64, e1:f64, x:f64) -> f64 {
 	t := clamp((x - e0) / (e1 - e0), 0.0, 1.0)
@@ -207,12 +169,12 @@ _smoothstep :: proc(e0:f64, e1:f64, x:f64) -> f64 {
 // Radial island mask in normalized grid space: 0 deep inland, 1 out at sea.
 // The coastline radius is perturbed by fractal noise so the edge meanders.
 @(private="file")
-_island_mask :: proc(x_:f64, z_:f64) -> f64 {
+_island_mask :: proc(seed:i64, x_:f64, z_:f64) -> f64 {
 	nx := x_*2 - 1
 	nz := z_*2 - 1
 	dist := math.sqrt(nx*nx + nz*nz) // 0 center .. 1 edge midpoint .. ~1.41 corner
 
-	coast := f64(_fbm(COAST_SEED, x_, z_, COAST_OCTAVES, COAST_FREQ, COAST_LACUNARITY, COAST_GAIN)) * COAST_STRENGTH
+	coast := f64(_fbm(seed + COAST_SEED, x_, z_, COAST_OCTAVES, COAST_FREQ, COAST_LACUNARITY, COAST_GAIN)) * COAST_STRENGTH
 	edge  := ISLAND_RADIUS + coast
 
 	return _smoothstep(edge, edge + ISLAND_FALLOFF, dist)
@@ -220,11 +182,11 @@ _island_mask :: proc(x_:f64, z_:f64) -> f64 {
 
 // Whether a grid cell is part of the floating island (inside the coastline).
 @(private="file")
-_is_land :: proc(x:int, z:int, width:int, length:int) -> bool {
+_is_land :: proc(seed:i64, x:int, z:int, width:int, length:int) -> bool {
 	x_ := f64(x) / f64(width)
 	z_ := f64(z) / f64(length)
 
-	return _island_mask(x_, z_) < AIR_CUTOFF
+	return _island_mask(seed, x_, z_) < AIR_CUTOFF
 }
 
 @(private="file")
@@ -236,34 +198,6 @@ _fbm :: proc(seed:i64, x:f64, z:f64, octs:int, freq:f64, lac:f64, gain:f64) -> f
 
 	for i in 0..<octs {
 		sum += amp * f64(noise.noise_2d(seed, { x*f, z*f }))
-		norm += amp
-		f *= lac
-		amp *= gain
-	}
-
-	return f32(sum / norm)
-}
-
-// Seamlessly-tileable fractal noise over the unit square. (u,v) are mapped onto
-// a 4D torus (two circles), so the noise is periodic in both axes and opposite
-// swatch edges line up when the texture is tiled by the triplanar shader.
-@(private="file")
-_tile_fbm :: proc(seed:i64, u:f64, v:f64, octs:int, freq:f64, lac:f64, gain:f64) -> f32 {
-	TAU :: 2.0 * math.PI
-
-	sum := 0.0
-	amp := 1.0
-	f := freq
-	norm := 0.0
-
-	a := u * TAU
-	b := v * TAU
-
-	for i in 0..<octs {
-		r := f / TAU
-		p := noise.Vec4{ math.cos(a) * r, math.sin(a) * r, math.cos(b) * r, math.sin(b) * r }
-
-		sum += amp * f64(noise.noise_4d_fallback(seed, p))
 		norm += amp
 		f *= lac
 		amp *= gain
@@ -309,13 +243,13 @@ _grid_normal :: proc(heights:[^]f32, width:int, length:int, x:int, z:int, scale:
 
 // Whether the whole quad cell at (x,z) is land (all four corners inside).
 @(private="file")
-_cell_land :: proc(x:int, z:int, width:int, length:int) -> bool {
+_cell_land :: proc(seed:i64, x:int, z:int, width:int, length:int) -> bool {
 	if x < 0 || z < 0 || x >= width - 1 || z >= length - 1 do return false
 
-	return _is_land(x, z, width, length)     &&
-	       _is_land(x+1, z, width, length)   &&
-	       _is_land(x, z+1, width, length)   &&
-	       _is_land(x+1, z+1, width, length)
+	return _is_land(seed, x, z, width, length)     &&
+	       _is_land(seed, x+1, z, width, length)   &&
+	       _is_land(seed, x, z+1, width, length)   &&
+	       _is_land(seed, x+1, z+1, width, length)
 }
 
 @(private="file")
@@ -372,7 +306,7 @@ _wall :: proc(vertices:^[dynamic]f32, texcoords:^[dynamic]f32, normals:^[dynamic
 // same width x length grid; bottom vertices are stored after all top vertices
 // (offset N), so index `i` on top maps to `i + N` on the bottom.
 @(private="file")
-_island_mesh :: proc(top:[^]f32, bottom:[^]f32, width:int, length:int, scale:f32) -> rl.Mesh {
+_island_mesh :: proc(seed:i64, top:[^]f32, bottom:[^]f32, width:int, length:int, scale:f32) -> rl.Mesh {
 	vertices : [dynamic]f32
 	texcoords : [dynamic]f32
 	normals : [dynamic]f32
@@ -407,7 +341,7 @@ _island_mesh :: proc(top:[^]f32, bottom:[^]f32, width:int, length:int, scale:f32
 		for z in 0..<(length - 1) {
 			// Floating island: only emit a cell when all four corners are
 			// land, so the off-island area is empty space rather than mesh.
-			if !_cell_land(x, z, width, length) do continue
+			if !_cell_land(seed, x, z, width, length) do continue
 
 			r1 := u16(x * length + z)
 			r2 := u16((x + 1) * length + z)
@@ -423,10 +357,10 @@ _island_mesh :: proc(top:[^]f32, bottom:[^]f32, width:int, length:int, scale:f32
 			// close the side wherever a neighbouring cell is absent
 			center := rl.Vector3{ (f32(x) + 0.5) * scale, 0, (f32(z) + 0.5) * scale }
 
-			if !_cell_land(x - 1, z, width, length) do _wall(&vertices, &texcoords, &normals, &indices, N, r1,     r1 + 1, center)
-			if !_cell_land(x + 1, z, width, length) do _wall(&vertices, &texcoords, &normals, &indices, N, r2,     r2 + 1, center)
-			if !_cell_land(x, z - 1, width, length) do _wall(&vertices, &texcoords, &normals, &indices, N, r1,     r2,     center)
-			if !_cell_land(x, z + 1, width, length) do _wall(&vertices, &texcoords, &normals, &indices, N, r1 + 1, r2 + 1, center)
+			if !_cell_land(seed, x - 1, z, width, length) do _wall(&vertices, &texcoords, &normals, &indices, N, r1,     r1 + 1, center)
+			if !_cell_land(seed, x + 1, z, width, length) do _wall(&vertices, &texcoords, &normals, &indices, N, r2,     r2 + 1, center)
+			if !_cell_land(seed, x, z - 1, width, length) do _wall(&vertices, &texcoords, &normals, &indices, N, r1,     r2,     center)
+			if !_cell_land(seed, x, z + 1, width, length) do _wall(&vertices, &texcoords, &normals, &indices, N, r1 + 1, r2 + 1, center)
 		}
 	}
 

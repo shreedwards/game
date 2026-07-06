@@ -1,4 +1,4 @@
-package game
+package collision
 
 import rl "vendor:raylib"
 
@@ -7,6 +7,13 @@ Body :: struct {
 	velocity:  rl.Vector3,
 	direction: rl.Vector3,
 	grounded:  bool,
+}
+
+Triangle :: struct {
+	a: rl.Vector3,
+	b: rl.Vector3,
+	c: rl.Vector3,
+	normal: rl.Vector3
 }
 
 move_and_collide :: proc(body:^Body, radius:f32, tris:[]Triangle, delta:f32) {
@@ -38,6 +45,52 @@ move_and_collide :: proc(body:^Body, radius:f32, tris:[]Triangle, delta:f32) {
 				}
 			}
 		}
+	}
+}
+
+append_mesh_tris :: proc(
+	tris: ^[dynamic]Triangle,
+	mesh: rl.Mesh,
+	offset: rl.Vector3
+) {
+	v := mesh.vertices
+
+	vert :: proc(v:[^]f32, i:int, offset:rl.Vector3) -> rl.Vector3 {
+		return rl.Vector3 { v[i*3], v[i*3 + 1], v[i*3 + 2] } + offset
+	}
+
+	make_tri :: proc(a, b, c: rl.Vector3) -> Triangle {
+		n := rl.Vector3Normalize(rl.Vector3CrossProduct(b - a, c -a))
+
+		return Triangle { a, b, c, n }
+	}
+
+	if mesh.indices != nil {
+		idx := mesh.indices
+
+		for t in 0..<int(mesh.triangleCount) {
+			a := vert(v, int(idx[t*3 + 0]), offset)
+			b := vert(v, int(idx[t*3 + 1]), offset)
+			c := vert(v, int(idx[t*3 + 2]), offset)
+
+			append(tris, make_tri(a, b, c))
+		}
+	} else {
+		for t in 0..<int(mesh.triangleCount) {
+			a := vert(v, t*3 + 0, offset)
+			b := vert(v, t*3 + 1, offset)
+			c := vert(v, t*3 + 2, offset)
+
+			append(tris, make_tri(a, b, c))
+		}
+	}
+}
+
+// Appends a batch of prebuilt triangles shifted by `offset`. Used to place a
+// model's local-space collision tris at its world position.
+append_tris :: proc(tris: ^[dynamic]Triangle, src: []Triangle, offset: rl.Vector3) {
+	for t in src {
+		append(tris, Triangle { t.a + offset, t.b + offset, t.c + offset, t.normal })
 	}
 }
 

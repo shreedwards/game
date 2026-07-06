@@ -1,4 +1,4 @@
-package game
+package shader
 
 import rl "vendor:raylib"
 
@@ -16,6 +16,7 @@ AMBIENT   :: rl.Vector3 { 0.30, 0.34, 0.42 }
 // Bind the static sun uniforms and route "viewPos" through raylib's standard
 // view-location slot so it can be refreshed each frame without a name lookup.
 // Call once, right after loading a shader.
+@(private)
 bind_lighting :: proc(shader: rl.Shader) {
 	shader.locs[int(rl.ShaderLocationIndex.VECTOR_VIEW)] =
 		rl.GetShaderLocation(shader, "viewPos")
@@ -28,9 +29,13 @@ bind_lighting :: proc(shader: rl.Shader) {
 	rl.SetShaderValue(shader, rl.GetShaderLocation(shader, "ambient"),  &amb, .VEC3)
 }
 
-// Feed the current camera position to the shader (needed for specular).
-// Call each frame before drawing anything that uses this shader.
-update_lighting :: proc(shader: rl.Shader, view_pos: rl.Vector3) {
+// Feed the current camera position to every loaded shader (needed for
+// specular). Call each frame before drawing anything lit.
+update_lighting :: proc(view_pos: rl.Vector3) {
 	pos := view_pos
-	rl.SetShaderValue(shader, shader.locs[int(rl.ShaderLocationIndex.VECTOR_VIEW)], &pos, .VEC3)
+	all := [?]rl.Shader{ shaders.ground, shaders.lit, shaders.leaf }
+
+	for s in all {
+		rl.SetShaderValue(s, s.locs[int(rl.ShaderLocationIndex.VECTOR_VIEW)], &pos, .VEC3)
+	}
 }

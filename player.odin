@@ -5,6 +5,8 @@ import "core:math/linalg"
 
 import rl "vendor:raylib"
 
+import "collision"
+
 @(private="file")
 GRAVITY : f32 : 32.0
 
@@ -43,7 +45,7 @@ PLAYER_RADIUS : f32 : 0.5
 
 player_cam := rl.Camera3D { }
 
-player_body := Body { }
+player_body := collision.Body { }
 
 @(private="file")
 _look := rl.Vector2 { }
@@ -100,7 +102,7 @@ update_player :: proc(world:^World) {
 }
 
 @(private="file")
-_update_body :: proc(tris:[]Triangle, rot:f32, side:i8, forward:i8, jump:bool, crouch:bool) {
+_update_body :: proc(tris:[]collision.Triangle, rot:f32, side:i8, forward:i8, jump:bool, crouch:bool) {
 	input := rl.Vector2 { f32(side), f32(-forward) }
 
 	if side != 0 && forward != 0 {
@@ -149,7 +151,7 @@ _update_body :: proc(tris:[]Triangle, rot:f32, side:i8, forward:i8, jump:bool, c
 	player_body.velocity.x = hvelo.x
 	player_body.velocity.z = hvelo.z
 
-	move_and_collide(&player_body, PLAYER_RADIUS, tris, delta)
+	collision.move_and_collide(&player_body, PLAYER_RADIUS, tris, delta)
 }
 
 @(private="file")

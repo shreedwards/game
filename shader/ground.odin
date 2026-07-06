@@ -1,8 +1,8 @@
-package game
+package shader
 
 import rl "vendor:raylib"
 
-// Triplanar terrain shader. The island mesh has no usable UVs for steep faces
+// Triplanar ground shader. The ground mesh has no usable UVs for steep faces
 // (terrace risers, walls), so instead of mesh UVs the fragment shader samples
 // three tileable biome swatches by WORLD POSITION. Two normals are used, and
 // keeping them separate is the whole trick:
@@ -21,7 +21,7 @@ import rl "vendor:raylib"
 // raylib auto-binds: mvp, matModel, matNormal, colDiffuse, and the material
 // maps ALBEDO/METALNESS/NORMAL as texture0/texture1/texture2 (grass/dirt/stone).
 
-ISLAND_VS :: `#version 330
+GROUND_VS :: `#version 330
 in vec3 vertexPosition;
 in vec3 vertexNormal;
 in vec4 vertexColor;
@@ -42,7 +42,7 @@ void main() {
 }
 `
 
-ISLAND_FS :: `#version 330
+GROUND_FS :: `#version 330
 in vec3 fragPosition;
 in vec3 fragNormal;
 in vec4 fragColor;
@@ -60,7 +60,7 @@ uniform vec3 viewPos;  // camera world position (for specular)
 out vec4 finalColor;
 
 const float SCALE   = 0.12;  // texture tiles per world unit
-const float TEX_RES = 256.0; // swatch resolution (must match SWATCH_RES)
+const float TEX_RES = 256.0; // swatch resolution (must match island.SWATCH_RES)
 
 const float EDGE_SCALE  = 6.0;  // ragged-edge noise frequency (higher = smaller chunks)
 const float EDGE_JITTER = 0.18; // how far the noise breaks up the biome boundary
@@ -161,8 +161,9 @@ void main() {
 }
 `
 
-load_island_shader :: proc() -> rl.Shader {
-	shader := rl.LoadShaderFromMemory(ISLAND_VS, ISLAND_FS)
+@(private)
+load_ground_shader :: proc() -> rl.Shader {
+	shader := rl.LoadShaderFromMemory(GROUND_VS, GROUND_FS)
 	bind_lighting(shader)
 	return shader
 }

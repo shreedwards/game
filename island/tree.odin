@@ -1,43 +1,16 @@
-package game
+package island
 
 import "core:math"
 import "core:math/rand"
+
 import rl "vendor:raylib"
 
-// Default seed for the world's tree; change it to grow a different tree.
+import "../collision"
+
+// Seed offset for the island's tree: added to the island seed so the tree is
+// decorrelated from the ground's noise layers but still fully determined by
+// the one island seed.
 TREE_SEED :: 7
-
-// Bark swatch: assorted browns coloured by a vertically stretched Voronoi
-// pattern, so each tall, thin cell reads as a streak of wood grain. The sample
-// grid has many cells across (BARK_CELLS_X) but few down (BARK_CELLS_Y), which
-// is what stretches the cells vertically. See gen_bark_swatch.
-BARK_SEED    :: 31
-BARK_CELLS_X :: 80 // thin cells across -> fine grain lines
-BARK_CELLS_Y :: 10  // few tall cells down -> grain runs vertically
-
-BARK_BROWNS :: [?]rl.Color{
-	{  58, 40, 24, 255 },
-	{  82, 55, 33, 255 },
-	{ 101, 67, 33, 255 },
-	{ 120, 85, 52, 255 },
-}
-
-// The leaf swatch isn't a smooth palette like bark; it's spattered foliage.
-// Small, same-sized rects of assorted greens are stamped at random over a
-// transparent swatch, so overlaps clump into leaf clusters and the bare gaps
-// read as holes in the canopy (the leaf shader discards them). See
-// gen_leaf_swatch.
-LEAF_SEED     :: 37
-LEAF_RECT_W   :: 7
-LEAF_RECT_H   :: 12
-LEAF_COVERAGE :: 5 // total rect area as a multiple of the swatch (overlaps + gaps)
-
-LEAF_GREENS :: [?]rl.Color{
-	{ 40,  90, 38, 255 },
-	{ 56, 120, 46, 255 },
-	{ 74, 140, 58, 255 },
-	{ 96, 160, 72, 255 },
-}
 
 // Texel size in world units. Tree UVs are always world distances divided by
 // the swatch's world size (SWATCH_RES texels), never stretched to fit a face:
@@ -46,112 +19,10 @@ LEAF_GREENS :: [?]rl.Color{
 BARK_TEXEL :: 0.05 // world units per bark texel
 LEAF_TEXEL :: 0.05 // world units per leaf texel
 
-// Bakes the leaf swatch: a transparent texture spattered with many small,
-// same-sized rects of random greens. Overlaps build up denser leaf clusters and
-// the gaps stay transparent, so sampled onto the leaf hemispheres (with the leaf
-// shader discarding transparent texels) it reads as ragged foliage rather than a
-// solid dome. `seed` makes the spatter deterministic.
-gen_leaf_swatch :: proc(seed: i64) -> rl.Texture2D {
-	img := rl.GenImageColor(SWATCH_RES, SWATCH_RES, rl.BLANK) // fully transparent
-
-	// Local seeded RNG so the spatter is deterministic and doesn't disturb the
-	// program-wide default generator.
-	state := rand.create_u64(u64(seed))
-	context.random_generator = rand.default_random_generator(&state)
-
-	area    := f32(SWATCH_RES * SWATCH_RES) * LEAF_COVERAGE / f32(LEAF_RECT_W * LEAF_RECT_H)
-	count   := int(area)
-	greens  := LEAF_GREENS
-
-	for _ in 0..<count {
-		x := rand.int31_max(SWATCH_RES)
-		y := rand.int31_max(SWATCH_RES)
-		col := greens[rand.int31_max(len(greens))]
-
-		rl.ImageDrawRectangle(&img, x, y, LEAF_RECT_W, LEAF_RECT_H, col)
-	}
-
-	tex := rl.LoadTextureFromImage(img)
-
-	rl.UnloadImage(img)
-	rl.SetTextureFilter(tex, .POINT)
-	rl.SetTextureWrap(tex, .REPEAT)
-
-	return tex
-}
-
-// Bakes the bark swatch: assorted browns laid down by a vertically stretched
-// Voronoi pattern. The sample grid has many cells across but few down, so each
-// Voronoi cell is a tall, thin column; colouring the cells from a few browns
-// turns those columns into vertical wood-grain streaks. Cell indices wrap, so
-// the swatch tiles seamlessly. `seed` makes the grain deterministic.
-gen_bark_swatch :: proc(seed: i64) -> rl.Texture2D {
-	img := rl.GenImageColor(SWATCH_RES, SWATCH_RES, rl.BLANK)
-	browns := BARK_BROWNS
-
-	for py in 0..<SWATCH_RES {
-		for px in 0..<SWATCH_RES {
-			// Cell-space point, stretched so cells are tall and thin: a unit cell
-			// spans 1/BARK_CELLS_X of the width but 1/BARK_CELLS_Y of the height.
-			cx := f32(px) / f32(SWATCH_RES) * BARK_CELLS_X
-			cy := f32(py) / f32(SWATCH_RES) * BARK_CELLS_Y
-
-			id := _bark_cell(seed, cx, cy, BARK_CELLS_X, BARK_CELLS_Y)
-			rl.ImageDrawPixel(&img, i32(px), i32(py), browns[id %% len(browns)])
-		}
-	}
-
-	tex := rl.LoadTextureFromImage(img)
-
-	rl.UnloadImage(img)
-	rl.SetTextureFilter(tex, .POINT)
-	rl.SetTextureWrap(tex, .REPEAT)
-
-	return tex
-}
-
-// Colour index of the nearest Voronoi feature point's cell at (x,y) in cell
-// space. Cells wrap on cells_x/cells_y so the pattern tiles seamlessly. Each
-// cell's feature point is jittered inside it by a hash, and the winning cell's
-// hash also selects the colour.
-@(private="file")
-_bark_cell :: proc(seed: i64, x: f32, y: f32, cells_x: int, cells_y: int) -> int {
-	ix := int(math.floor(x))
-	iy := int(math.floor(y))
-
-	best    := f32(1e30)
-	best_id := 0
-
-	for dy in -1..=1 {
-		for dx in -1..=1 {
-			cxi := ix + dx
-			cyi := iy + dy
-
-			// Wrap the cell index so feature points match across swatch edges.
-			h := _hash(seed, cxi %% cells_x, cyi %% cells_y)
-
-			// Feature point: cell origin + hashed [0,1) jitter.
-			fx := f32(cxi) + f32(h & 0xFFFF) / 65536.0
-			fy := f32(cyi) + f32((h >> 16) & 0xFFFF) / 65536.0
-
-			d := (fx - x) * (fx - x) + (fy - y) * (fy - y)
-			if d < best {
-				best = d
-				best_id = int(h >> 8) // decorrelate the colour from the jitter bits
-			}
-		}
-	}
-
-	return best_id
-}
-
-// Small deterministic integer hash -> u32, keyed by (seed, a, b).
-@(private="file")
-_hash :: proc(seed: i64, a: int, b: int) -> u32 {
-	h := u32(seed) + u32(a) * 374761393 + u32(b) * 668265263
-	h = (h ~ (h >> 13)) * 1274126177
-	h = h ~ (h >> 16)
-	return h
+Tree :: struct {
+	leaves: rl.Model,
+	trunk: rl.Model,
+	tris: [dynamic]collision.Triangle
 }
 
 @(private="file")
@@ -223,18 +94,29 @@ Node :: struct {
 	children:   [MAX_CHILDREN]^Node
 }
 
-// Grows a tree from `seed` and returns its two uploaded meshes - bark
-// (trunk/branch tubes) and leaves (canopy domes) - each ready for
-// LoadModelFromMesh. They are separate meshes so the leaves can render with
-// the alpha-cutout leaf shader (and the leaf swatch) while the bark stays
-// opaque (with the bark swatch). The intermediate node graph is built,
-// skinned, and freed internally, so callers only make this one call. The same
-// seed always yields the same tree.
-create_tree :: proc(seed: u64) -> (bark: rl.Mesh, leaves: rl.Mesh) {
+// Grows a tree from `seed` and returns it ready to place: bark (trunk/branch
+// tubes) and leaves (canopy domes) as two uploaded models, plus the tree's
+// collision tris in tree-LOCAL space (the caller offsets them to the tree's
+// world position). They are separate models so the leaves can render with the
+// alpha-cutout leaf shader (and the leaf swatch) while the bark stays opaque
+// (with the bark swatch); wiring those materials up is the caller's job. The
+// intermediate node graph is built, skinned, and freed internally, so callers
+// only make this one call. The same seed always yields the same tree.
+create_tree :: proc(seed: u64) -> Tree {
 	root := _grow_tree(seed)
 	defer _free_tree(root)
 
-	return _tree_mesh(root)
+	bark_mesh, leaf_mesh := _tree_mesh(root)
+
+	tree := Tree {
+		trunk  = rl.LoadModelFromMesh(bark_mesh),
+		leaves = rl.LoadModelFromMesh(leaf_mesh)
+	}
+
+	collision.append_mesh_tris(&tree.tris, bark_mesh, rl.Vector3 { })
+	collision.append_mesh_tris(&tree.tris, leaf_mesh, rl.Vector3 { })
+
+	return tree
 }
 
 // Builds the node graph for `seed`. A seeded generator is installed into the

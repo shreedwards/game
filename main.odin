@@ -1,8 +1,9 @@
 package game
 
-import "core:math"
-
 import rl "vendor:raylib"
+
+import "shader"
+import "texture"
 
 active_cam := &player_cam
 dev_mode := false
@@ -10,6 +11,11 @@ dev_mode := false
 main :: proc() {
 	rl.SetConfigFlags({ .MSAA_4X_HINT })
 	rl.InitWindow(1920, 1080, "Game")
+
+	// Global resources: shaders and textures are loaded once at launch and
+	// unloaded once at shutdown.
+	shader.load_shaders()
+	texture.load_textures()
 
 	world := create_world()
 
@@ -62,5 +68,7 @@ main :: proc() {
 
 	unload_grain(&grain)
 	unload_world(&world)
+	texture.unload_textures()
+	shader.unload_shaders()
 	rl.CloseWindow()
 }
