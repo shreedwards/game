@@ -20,6 +20,8 @@ BARK_TEXEL :: 0.05 // world units per bark texel
 LEAF_TEXEL :: 0.05 // world units per leaf texel
 
 Tree :: struct {
+	position: rl.Vector3, // where the tree stands, chosen by create_island
+
 	leaves: rl.Model,
 	trunk: rl.Model,
 	tris: [dynamic]collision.Triangle

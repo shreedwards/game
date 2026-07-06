@@ -75,19 +75,68 @@ ISLAND_SCALE     :: 1.0 // horizontal spacing between grid cells
 // Generates the full floating-island ground mesh for `seed` and uploads it,
 // ready for LoadModelFromMesh. Builds the top height field, hangs the underside
 // below it, then merges both surfaces and the connecting rim walls into one
-// mesh. The intermediate height buffers are freed internally, so callers make
-// one call. All noise layers derive their seeds from `seed` (see the *_SEED
+// mesh. All noise layers derive their seeds from `seed` (see the *_SEED
 // offsets above), so the same seed always yields the same ground.
 // Texturing is the triplanar ground shader's job (it samples tileable biome
 // swatches by world position); no UVs or colors are baked per location.
-gen_ground :: proc(seed: i64) -> rl.Mesh {
-	heights := _island_heights(seed, ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_AMPLITUDE)
-	defer delete(heights)
+//
+// Also returns the top height field so the caller can place things on the
+// surface (see flat_land_spots); the caller owns and deletes it. The other
+// intermediate buffers are freed internally.
+@(private)
+gen_ground :: proc(seed: i64) -> (mesh: rl.Mesh, top: [dynamic]f32) {
+	top = _island_heights(seed, ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_AMPLITUDE)
 
-	bottom := _island_underside(seed, raw_data(heights), ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_AMPLITUDE)
+	bottom := _island_underside(seed, raw_data(top), ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_AMPLITUDE)
 	defer delete(bottom)
 
-	return _island_mesh(seed, raw_data(heights), raw_data(bottom), ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_SCALE)
+	mesh = _island_mesh(seed, raw_data(top), raw_data(bottom), ISLAND_WIDTH, ISLAND_LENGTH, ISLAND_SCALE)
+
+	return
+}
+
+// A spot qualifies as flat when every grid vertex within FLAT_RADIUS cells is
+// land at nearly the same height. FLAT_TOLERANCE must swallow the detail
+// noise's jitter (~0.4 world units between two points) while rejecting a
+// terrace step (1.5 world units).
+FLAT_RADIUS    :: 2
+FLAT_TOLERANCE :: 0.5
+
+// Candidate tree spots for `seed`'s island: top-surface grid vertices whose
+// whole neighbourhood (FLAT_RADIUS cells around) is land at nearly the same
+// height - a flat plane with room to stand on. `top` is the height field
+// returned by gen_ground. Returns world-space positions on the surface; the
+// caller owns the array. Purely a function of (seed, top), so placement stays
+// deterministic per seed.
+@(private)
+flat_land_spots :: proc(seed: i64, top: []f32) -> [dynamic]rl.Vector3 {
+	spots : [dynamic]rl.Vector3
+
+	for x in FLAT_RADIUS..<(ISLAND_WIDTH - FLAT_RADIUS) {
+		for z in FLAT_RADIUS..<(ISLAND_LENGTH - FLAT_RADIUS) {
+			h := top[x * ISLAND_LENGTH + z]
+
+			flat := true
+			neighbours: for dx in -FLAT_RADIUS..=FLAT_RADIUS {
+				for dz in -FLAT_RADIUS..=FLAT_RADIUS {
+					nx := x + dx
+					nz := z + dz
+
+					if !_is_land(seed, nx, nz, ISLAND_WIDTH, ISLAND_LENGTH) ||
+					   abs(top[nx * ISLAND_LENGTH + nz] - h) > FLAT_TOLERANCE {
+						flat = false
+						break neighbours
+					}
+				}
+			}
+
+			if flat {
+				append(&spots, rl.Vector3 { f32(x) * ISLAND_SCALE, h, f32(z) * ISLAND_SCALE })
+			}
+		}
+	}
+
+	return spots
 }
 
 @(private="file")

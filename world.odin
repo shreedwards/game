@@ -8,17 +8,22 @@ import "island"
 import "shader"
 import "texture"
 
-// The world's island seed: the same seed always generates the same island
-// (ground and trees alike). 0 reproduces the island from before generation
-// was seeded. Change it for a different island.
-ISLAND_SEED :: 0
+// The world's islands: one entry per island, generated from its seed and
+// floated at its position. The same seed always generates the same island -
+// same ground, same number of trees, at the same spots. Trees live in
+// island-local space, so a tree's world position is island + tree.
+Island_Spawn :: struct {
+	seed:     i64,
+	position: rl.Vector3
+}
 
-// Where the island's trees sit in the world: models and collision tris alike,
-// with the trunk base sunk one unit into the terrain.
-TREE_POSITION :: rl.Vector3 { 20.0, -1.0, 20.0 }
+ISLAND_SPAWNS :: [?]Island_Spawn {
+	{ seed = 0, position = {  0.0, 0.0,  0.0 } },
+	{ seed = 1, position = { 65.0, 6.0, 10.0 } },
+}
 
 World :: struct {
-	island: island.Island,
+	islands: [dynamic]island.Island,
 
 	tris: [dynamic]collision.Triangle
 }
@@ -26,28 +31,33 @@ World :: struct {
 create_world :: proc() -> World {
 	world: World
 
-	world.island = island.create_island(ISLAND_SEED)
+	for spawn in ISLAND_SPAWNS {
+		isle := island.create_island(spawn.seed)
+		isle.position = spawn.position
 
-	// Triplanar shader samples three tileable biome swatches by world position.
-	ground := &world.island.ground
-	ground.materials[0].shader = shader.shaders.ground
-	rl.SetMaterialTexture(&ground.materials[0], .ALBEDO,    texture.textures.grass) // texture0
-	rl.SetMaterialTexture(&ground.materials[0], .METALNESS, texture.textures.dirt)  // texture1
-	rl.SetMaterialTexture(&ground.materials[0], .NORMAL,    texture.textures.stone) // texture2
+		// Triplanar shader samples three tileable biome swatches by world position.
+		ground := &isle.ground
+		ground.materials[0].shader = shader.shaders.ground
+		rl.SetMaterialTexture(&ground.materials[0], .ALBEDO,    texture.textures.grass) // texture0
+		rl.SetMaterialTexture(&ground.materials[0], .METALNESS, texture.textures.dirt)  // texture1
+		rl.SetMaterialTexture(&ground.materials[0], .NORMAL,    texture.textures.stone) // texture2
 
-	collision.append_mesh_tris(&world.tris, ground.meshes[0], rl.Vector3 { })
+		collision.append_mesh_tris(&world.tris, ground.meshes[0], isle.position)
 
-	// Bark tubes are opaque and use the plain lit shader; the leaf domes use
-	// the cutout variant so the leaf swatch's transparent gaps become holes in
-	// the canopy. Both sample their generated swatch as the albedo map, with
-	// UVs baked into the meshes at constant world texel size.
-	for tree in world.island.trees {
-		shader.apply_shader(tree.trunk,  shader.shaders.lit)
-		shader.apply_shader(tree.leaves, shader.shaders.leaf)
-		rl.SetMaterialTexture(&tree.trunk.materials[0],  .ALBEDO, texture.textures.bark)
-		rl.SetMaterialTexture(&tree.leaves.materials[0], .ALBEDO, texture.textures.leaf)
+		// Bark tubes are opaque and use the plain lit shader; the leaf domes use
+		// the cutout variant so the leaf swatch's transparent gaps become holes in
+		// the canopy. Both sample their generated swatch as the albedo map, with
+		// UVs baked into the meshes at constant world texel size.
+		for tree in isle.trees {
+			shader.apply_shader(tree.trunk,  shader.shaders.lit)
+			shader.apply_shader(tree.leaves, shader.shaders.leaf)
+			rl.SetMaterialTexture(&tree.trunk.materials[0],  .ALBEDO, texture.textures.bark)
+			rl.SetMaterialTexture(&tree.leaves.materials[0], .ALBEDO, texture.textures.leaf)
 
-		collision.append_tris(&world.tris, tree.tris[:], TREE_POSITION)
+			collision.append_tris(&world.tris, tree.tris[:], isle.position + tree.position)
+		}
+
+		append(&world.islands, isle)
 	}
 
 	return world
@@ -57,29 +67,39 @@ draw_world :: proc(world: ^World) {
 
 	shader.update_lighting(active_cam.position)
 
-	rl.DrawModel(world.island.ground, rl.Vector3 { }, 1.0, rl.WHITE)
+	for isle in world.islands {
+		rl.DrawModel(isle.ground, isle.position, 1.0, rl.WHITE)
+	}
 
-	// Tree is a hollow, open-ended mesh: render both faces so it doesn't cull
-	// away where we see its inside. Bark/leaf colour comes from the sampled
+	// Trees are hollow, open-ended meshes: render both faces so they don't cull
+	// away where we see their insides. Bark/leaf colour comes from the sampled
 	// swatches, so tint white to leave them untouched.
 	rlgl.DisableBackfaceCulling()
-	for tree in world.island.trees {
-		rl.DrawModel(tree.trunk,  TREE_POSITION, 1.0, rl.WHITE)
-		rl.DrawModel(tree.leaves, TREE_POSITION, 1.0, rl.WHITE)
+	for isle in world.islands {
+		for tree in isle.trees {
+			rl.DrawModel(tree.trunk,  isle.position + tree.position, 1.0, rl.WHITE)
+			rl.DrawModel(tree.leaves, isle.position + tree.position, 1.0, rl.WHITE)
+		}
 	}
 	rlgl.EnableBackfaceCulling()
 
 	if dev_mode {
-		rl.DrawModelWires(world.island.ground, rl.Vector3 { }, 1.0, rl.DARKGRAY)
+		for isle in world.islands {
+			rl.DrawModelWires(isle.ground, isle.position, 1.0, rl.DARKGRAY)
 
-		for tree in world.island.trees {
-			rl.DrawModelWires(tree.trunk,  TREE_POSITION, 1.0, rl.DARKGRAY)
-			rl.DrawModelWires(tree.leaves, TREE_POSITION, 1.0, rl.DARKGRAY)
+			for tree in isle.trees {
+				rl.DrawModelWires(tree.trunk,  isle.position + tree.position, 1.0, rl.DARKGRAY)
+				rl.DrawModelWires(tree.leaves, isle.position + tree.position, 1.0, rl.DARKGRAY)
+			}
 		}
 	}
 }
 
 unload_world :: proc(world: ^World) {
-	island.unload_island(&world.island)
+	for &isle in world.islands {
+		island.unload_island(&isle)
+	}
+
+	delete(world.islands)
 	delete(world.tris)
 }
