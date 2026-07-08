@@ -2,6 +2,8 @@ package collision
 
 import rl "vendor:raylib"
 
+import "../entity"
+
 Body :: struct {
 	position:  rl.Vector3,
 	velocity:  rl.Vector3,
@@ -13,10 +15,15 @@ Triangle :: struct {
 	a: rl.Vector3,
 	b: rl.Vector3,
 	c: rl.Vector3,
-	normal: rl.Vector3
+	normal: rl.Vector3,
+
+	// The entity this triangle belongs to (see the entity package). Nil until the
+	// owning entity exists - set once, after the tris are in their final world
+	// buffers.
+	owner: ^entity.Entity
 }
 
-move_and_collide :: proc(body:^Body, radius:f32, tris:[]Triangle, delta:f32) {
+move_and_collide :: proc(body:^Body, radius:f32, tris:[]^Triangle, delta:f32) {
 	body.position += body.velocity * delta
 	body.grounded = false
 
@@ -62,7 +69,7 @@ append_mesh_tris :: proc(
 	make_tri :: proc(a, b, c: rl.Vector3) -> Triangle {
 		n := rl.Vector3Normalize(rl.Vector3CrossProduct(b - a, c -a))
 
-		return Triangle { a, b, c, n }
+		return Triangle { a = a, b = b, c = c, normal = n }
 	}
 
 	if mesh.indices != nil {
@@ -86,11 +93,14 @@ append_mesh_tris :: proc(
 	}
 }
 
-// Appends a batch of prebuilt triangles shifted by `offset`. Used to place a
-// model's local-space collision tris at its world position.
-append_tris :: proc(tris: ^[dynamic]Triangle, src: []Triangle, offset: rl.Vector3) {
-	for t in src {
-		append(tris, Triangle { t.a + offset, t.b + offset, t.c + offset, t.normal })
+// Shifts every triangle in `tris` by `offset`, in place. Used to move a model's
+// local-space collision tris to its final world position, once that position is
+// known - the tris stay the single source of truth the world points into.
+translate_tris :: proc(tris: []Triangle, offset: rl.Vector3) {
+	for &t in tris {
+		t.a += offset
+		t.b += offset
+		t.c += offset
 	}
 }
 

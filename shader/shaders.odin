@@ -6,7 +6,7 @@ import rl "vendor:raylib"
 
 // Global shader resources, loaded once at launch (load_shaders) and unloaded
 // once at shutdown (unload_shaders). Reach them anywhere as shader.shaders.
-shaders : Shaders
+g_shaders : Shaders
 
 Shaders :: struct {
 	ground:      rl.Shader, // triplanar terrain shader (island ground only)
@@ -16,7 +16,7 @@ Shaders :: struct {
 
 // Call once after InitWindow (the GL context must exist).
 load_shaders :: proc() {
-	shaders = Shaders {
+	g_shaders = Shaders {
 		ground = load_ground_shader(),
 		lit    = load_lit_shader(),
 		leaf   = load_leaf_shader(),
@@ -24,9 +24,9 @@ load_shaders :: proc() {
 }
 
 unload_shaders :: proc() {
-	rl.UnloadShader(shaders.ground)
-	rl.UnloadShader(shaders.lit)
-	rl.UnloadShader(shaders.leaf)
+	rl.UnloadShader(g_shaders.ground)
+	rl.UnloadShader(g_shaders.lit)
+	rl.UnloadShader(g_shaders.leaf)
 }
 
 // Assign a shader to every material on a model so the whole model renders with

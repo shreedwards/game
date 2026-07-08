@@ -4,6 +4,7 @@ import rl "vendor:raylib"
 import "vendor:raylib/rlgl"
 
 import "collision"
+import "entity"
 import "island"
 import "shader"
 import "texture"
@@ -25,7 +26,10 @@ ISLAND_SPAWNS :: [?]Island_Spawn {
 World :: struct {
 	islands: [dynamic]island.Island,
 
-	tris: [dynamic]collision.Triangle
+	// Pointers into each ground's / tree's own collision tris (the single source
+	// of truth). Collision reads through these, so a triangle only ever has to be
+	// updated in the ground/tree that owns it and the world sees the change.
+	tris: [dynamic]^collision.Triangle
 }
 
 create_world :: proc() -> World {
@@ -36,28 +40,51 @@ create_world :: proc() -> World {
 		isle.position = spawn.position
 
 		// Triplanar shader samples three tileable biome swatches by world position.
-		ground := &isle.ground
-		ground.materials[0].shader = shader.shaders.ground
-		rl.SetMaterialTexture(&ground.materials[0], .ALBEDO,    texture.textures.grass) // texture0
-		rl.SetMaterialTexture(&ground.materials[0], .METALNESS, texture.textures.dirt)  // texture1
-		rl.SetMaterialTexture(&ground.materials[0], .NORMAL,    texture.textures.stone) // texture2
+		ground := &isle.ground.model
+		ground.materials[0].shader = shader.g_shaders.ground
+		rl.SetMaterialTexture(&ground.materials[0], .ALBEDO,    texture.g_textures.grass) // texture0
+		rl.SetMaterialTexture(&ground.materials[0], .METALNESS, texture.g_textures.dirt)  // texture1
+		rl.SetMaterialTexture(&ground.materials[0], .NORMAL,    texture.g_textures.stone) // texture2
 
-		collision.append_mesh_tris(&world.tris, ground.meshes[0], isle.position)
+		// The ground's tris were built in island-local space; move them to the
+		// island's world position now that it is set.
+		collision.translate_tris(isle.ground.tris[:], isle.position)
 
 		// Bark tubes are opaque and use the plain lit shader; the leaf domes use
 		// the cutout variant so the leaf swatch's transparent gaps become holes in
 		// the canopy. Both sample their generated swatch as the albedo map, with
 		// UVs baked into the meshes at constant world texel size.
-		for tree in isle.trees {
-			shader.apply_shader(tree.trunk,  shader.shaders.lit)
-			shader.apply_shader(tree.leaves, shader.shaders.leaf)
-			rl.SetMaterialTexture(&tree.trunk.materials[0],  .ALBEDO, texture.textures.bark)
-			rl.SetMaterialTexture(&tree.leaves.materials[0], .ALBEDO, texture.textures.leaf)
+		for &tree in isle.trees {
+			shader.apply_shader(tree.trunk,  shader.g_shaders.lit)
+			shader.apply_shader(tree.leaves, shader.g_shaders.leaf)
+			rl.SetMaterialTexture(&tree.trunk.materials[0],  .ALBEDO, texture.g_textures.bark)
+			rl.SetMaterialTexture(&tree.leaves.materials[0], .ALBEDO, texture.g_textures.leaf)
 
-			collision.append_tris(&world.tris, tree.tris[:], isle.position + tree.position)
+			// Tree tris are tree-local; move them to the tree's world position.
+			collision.translate_tris(tree.tris[:], isle.position + tree.position)
 		}
 
 		append(&world.islands, isle)
+	}
+
+	// Only after every island is stored do we create entities and gather tri
+	// pointers: both reference objects (grounds, trees, their tris) living in
+	// world.islands' final buffers, so their addresses are stable from here on.
+	// Each object becomes one entity, and every tri it owns points back at it.
+	for &isle in world.islands {
+		ground_entity := entity.add(.GROUND, &isle.ground)
+		for &t in isle.ground.tris {
+			t.owner = ground_entity
+			append(&world.tris, &t)
+		}
+
+		for &tree in isle.trees {
+			tree_entity := entity.add(.TREE, &tree)
+			for &t in tree.tris {
+				t.owner = tree_entity
+				append(&world.tris, &t)
+			}
+		}
 	}
 
 	return world
@@ -68,7 +95,7 @@ draw_world :: proc(world: ^World) {
 	shader.update_lighting(active_cam.position)
 
 	for isle in world.islands {
-		rl.DrawModel(isle.ground, isle.position, 1.0, rl.WHITE)
+		rl.DrawModel(isle.ground.model, isle.position, 1.0, rl.WHITE)
 	}
 
 	// Trees are hollow, open-ended meshes: render both faces so they don't cull
@@ -85,7 +112,7 @@ draw_world :: proc(world: ^World) {
 
 	if dev_mode {
 		for isle in world.islands {
-			rl.DrawModelWires(isle.ground, isle.position, 1.0, rl.DARKGRAY)
+			rl.DrawModelWires(isle.ground.model, isle.position, 1.0, rl.DARKGRAY)
 
 			for tree in isle.trees {
 				rl.DrawModelWires(tree.trunk,  isle.position + tree.position, 1.0, rl.DARKGRAY)
@@ -102,4 +129,6 @@ unload_world :: proc(world: ^World) {
 
 	delete(world.islands)
 	delete(world.tris)
+
+	entity.clear()
 }

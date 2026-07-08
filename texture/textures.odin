@@ -7,7 +7,7 @@ import "../island"
 // Global texture resources: every swatch the game bakes, loaded once at launch
 // (load_textures) and unloaded once at shutdown (unload_textures). Reach them
 // anywhere as texture.textures.
-textures : Textures
+g_textures : Textures
 
 Textures :: struct {
 	grass: rl.Texture,
@@ -25,7 +25,7 @@ SWATCH_RES :: island.SWATCH_RES // swatch resolution (px), tiled across the worl
 
 // Call once after InitWindow (the GL context must exist).
 load_textures :: proc() {
-	textures = Textures {
+	g_textures = Textures {
 		grass = gen_palette_swatch(GRASS, GRASS_SEED),
 		dirt  = gen_palette_swatch(DIRT,  DIRT_SEED),
 		stone = gen_palette_swatch(STONE, STONE_SEED),
@@ -35,9 +35,9 @@ load_textures :: proc() {
 }
 
 unload_textures :: proc() {
-	rl.UnloadTexture(textures.grass)
-	rl.UnloadTexture(textures.dirt)
-	rl.UnloadTexture(textures.stone)
-	rl.UnloadTexture(textures.bark)
-	rl.UnloadTexture(textures.leaf)
+	rl.UnloadTexture(g_textures.grass)
+	rl.UnloadTexture(g_textures.dirt)
+	rl.UnloadTexture(g_textures.stone)
+	rl.UnloadTexture(g_textures.bark)
+	rl.UnloadTexture(g_textures.leaf)
 }

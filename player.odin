@@ -102,7 +102,7 @@ update_player :: proc(world:^World) {
 }
 
 @(private="file")
-_update_body :: proc(tris:[]collision.Triangle, rot:f32, side:i8, forward:i8, jump:bool, crouch:bool) {
+_update_body :: proc(tris:[]^collision.Triangle, rot:f32, side:i8, forward:i8, jump:bool, crouch:bool) {
 	input := rl.Vector2 { f32(side), f32(-forward) }
 
 	if side != 0 && forward != 0 {

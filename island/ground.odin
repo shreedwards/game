@@ -5,6 +5,8 @@ import noise "core:math/noise"
 
 import rl "vendor:raylib"
 
+import "../collision"
+
 // The *_SEED constants below are OFFSETS added to the island seed, giving each
 // noise layer its own decorrelated seed while the whole island stays fully
 // determined by the one seed passed to gen_ground.
@@ -71,6 +73,11 @@ ISLAND_WIDTH     :: 45
 ISLAND_LENGTH    :: 45
 ISLAND_AMPLITUDE :: 7.5 // height field amplitude (top + underside)
 ISLAND_SCALE     :: 1.0 // horizontal spacing between grid cells
+
+Ground :: struct {
+	model: rl.Model,
+	tris: [dynamic]collision.Triangle
+}
 
 // Generates the full floating-island ground mesh for `seed` and uploads it,
 // ready for LoadModelFromMesh. Builds the top height field, hangs the underside

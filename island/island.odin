@@ -4,6 +4,8 @@ import "core:math/rand"
 
 import rl "vendor:raylib"
 
+import "../collision"
+
 // Resolution (px) of the baked swatch textures. It lives here because the
 // meshers bake UVs sized in swatch repeats (SWATCH_RES texels at a constant
 // world texel size); the game's texture baking must match it.
@@ -17,9 +19,9 @@ TREE_SINK    :: 1.0  // trunk base is sunk this far below the surface
 PLACE_SEED   :: 101  // seed offset for the placement RNG (tree count + spots)
 
 Island :: struct {
-	position: rl.Vector3, // where the island floats, chosen by the caller
+	position: rl.Vector3,
 
-	ground: rl.Model,
+	ground: Ground,
 	trees: [dynamic]Tree
 }
 
@@ -35,7 +37,11 @@ create_island :: proc(seed: i64) -> Island {
 	ground_mesh, top := gen_ground(seed)
 	defer delete(top)
 
-	isle.ground = rl.LoadModelFromMesh(ground_mesh)
+	isle.ground.model = rl.LoadModelFromMesh(ground_mesh)
+
+	// Collision tris for the ground, in island-local space (matching the mesh).
+	// The world translates them to the island's position once it is known.
+	collision.append_mesh_tris(&isle.ground.tris, ground_mesh, rl.Vector3 { })
 
 	// Where a tree may stand: flat, fully-on-land patches of the top surface.
 	spots := flat_land_spots(seed, top[:])
@@ -80,7 +86,8 @@ create_island :: proc(seed: i64) -> Island {
 }
 
 unload_island :: proc(isle: ^Island) {
-	rl.UnloadModel(isle.ground)
+	rl.UnloadModel(isle.ground.model)
+	delete(isle.ground.tris)
 
 	for tree in isle.trees {
 		rl.UnloadModel(tree.trunk)

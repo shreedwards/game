@@ -33,7 +33,7 @@ bind_lighting :: proc(shader: rl.Shader) {
 // specular). Call each frame before drawing anything lit.
 update_lighting :: proc(view_pos: rl.Vector3) {
 	pos := view_pos
-	all := [?]rl.Shader{ shaders.ground, shaders.lit, shaders.leaf }
+	all := [?]rl.Shader{ g_shaders.ground, g_shaders.lit, g_shaders.leaf }
 
 	for s in all {
 		rl.SetShaderValue(s, s.locs[int(rl.ShaderLocationIndex.VECTOR_VIEW)], &pos, .VEC3)

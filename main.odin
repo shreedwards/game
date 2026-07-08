@@ -1,7 +1,10 @@
 package game
 
+import "core:fmt"
+
 import rl "vendor:raylib"
 
+import "entity"
 import "shader"
 import "texture"
 
@@ -10,7 +13,7 @@ dev_mode := false
 
 main :: proc() {
 	rl.SetConfigFlags({ .MSAA_4X_HINT })
-	rl.InitWindow(1920, 1080, "Game")
+	rl.InitWindow(1600, 900, "Game")
 
 	// Global resources: shaders and textures are loaded once at launch and
 	// unloaded once at shutdown.
@@ -26,12 +29,27 @@ main :: proc() {
 	rl.DisableCursor()
 	rl.SetTargetFPS(120)
 
+	// Left-click picking: the kind of the last-hit entity, shown for a few
+	// seconds after the click.
+	pick_kind:  entity.Kind
+	pick_timer: f32 = 0.0
+
 	for !rl.WindowShouldClose() {
 		if dev_mode {
 			update_free_cam()
 		} else {
 			update_player(&world)
 		}
+
+		if rl.IsMouseButtonPressed(.LEFT) {
+			pick := pick_world(&world, active_cam^)
+			if pick.hit {
+				pick_kind  = pick.entity.kind
+				pick_timer = 3.0
+			}
+		}
+
+		pick_timer = max(0.0, pick_timer - rl.GetFrameTime())
 
 		if rl.IsKeyPressed(.GRAVE) {
 			if dev_mode {
@@ -61,6 +79,16 @@ main :: proc() {
 
 			if dev_mode {
 				rl.DrawText("DEV", 10, 40, 20, rl.BLACK)
+			}
+
+			// Crosshair: a small circle in the dead center of the screen, where
+			// the pick ray is cast from.
+			cx := rl.GetScreenWidth()  / 2
+			cy := rl.GetScreenHeight() / 2
+			rl.DrawCircleLines(cx, cy, 4, rl.WHITE)
+
+			if pick_timer > 0.0 {
+				rl.DrawText(fmt.ctprintf("%v", pick_kind), 10, 70, 20, rl.BLACK)
 			}
 
 		rl.EndDrawing()
