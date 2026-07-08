@@ -7,6 +7,8 @@ import rl "vendor:raylib"
 import "entity"
 import "shader"
 import "texture"
+import "inventory"
+import "inventory/items"
 
 active_cam := &player_cam
 dev_mode := false
@@ -14,6 +16,9 @@ dev_mode := false
 main :: proc() {
 	rl.SetConfigFlags({ .MSAA_4X_HINT })
 	rl.InitWindow(1600, 900, "Game")
+
+	items.register_all_items()
+	inventory.setup_hotbar()
 
 	// Global resources: shaders and textures are loaded once at launch and
 	// unloaded once at shutdown.
@@ -28,12 +33,6 @@ main :: proc() {
 
 	rl.DisableCursor()
 	rl.SetTargetFPS(120)
-
-	// Left-click picking: the kind of the last-hit entity, shown for a few
-	// seconds after the click.
-	pick_kind:  entity.Kind
-	pick_timer: f32 = 0.0
-
 	for !rl.WindowShouldClose() {
 		if dev_mode {
 			update_free_cam()
@@ -44,12 +43,20 @@ main :: proc() {
 		if rl.IsMouseButtonPressed(.LEFT) {
 			pick := pick_world(&world, active_cam^)
 			if pick.hit {
-				pick_kind  = pick.entity.kind
-				pick_timer = 3.0
+				hand := inventory.g_hotbar[inventory.g_hb_index]
+
+				items.g_items[hand.id].primary(pick.entity)
 			}
 		}
 
-		pick_timer = max(0.0, pick_timer - rl.GetFrameTime())
+		if rl.IsMouseButtonPressed(.RIGHT) {
+			pick := pick_world(&world, active_cam^)
+			if pick.hit {
+				hand := inventory.g_hotbar[inventory.g_hb_index]
+
+				items.g_items[hand.id].secondary(pick.entity)
+			}
+		}
 
 		if rl.IsKeyPressed(.GRAVE) {
 			if dev_mode {
@@ -87,15 +94,12 @@ main :: proc() {
 			cy := rl.GetScreenHeight() / 2
 			rl.DrawCircleLines(cx, cy, 4, rl.WHITE)
 
-			if pick_timer > 0.0 {
-				rl.DrawText(fmt.ctprintf("%v", pick_kind), 10, 70, 20, rl.BLACK)
-			}
-
 		rl.EndDrawing()
 	}
 
 	unload_grain(&grain)
 	unload_world(&world)
+	items.unload_all_items()
 	texture.unload_textures()
 	shader.unload_shaders()
 	rl.CloseWindow()
