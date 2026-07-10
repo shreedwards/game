@@ -5,6 +5,7 @@ import "vendor:raylib/rlgl"
 
 import "collision"
 import "entity"
+import "inventory"
 import "island"
 import "shader"
 import "texture"
@@ -97,6 +98,10 @@ draw_world :: proc(world: ^World) {
 	for isle in world.islands {
 		rl.DrawModel(isle.ground.model, isle.position, 1.0, rl.WHITE)
 	}
+
+	// Items the player has dropped into the world (drawn with the same lit shader
+	// as the props, wired up in create_viewmodel).
+	inventory.draw_placed(dev_mode)
 
 	// Trees are hollow, open-ended meshes: render both faces so they don't cull
 	// away where we see their insides. Bark/leaf colour comes from the sampled

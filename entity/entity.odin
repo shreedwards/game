@@ -19,6 +19,7 @@ Entity :: struct {
 Kind :: enum {
 	GROUND,
 	TREE,
+	PLACED_ITEM
 }
 
 // Creates an entity of `kind` wrapping `actual` and returns a stable pointer to
@@ -30,6 +31,20 @@ add :: proc(kind: Kind, actual: rawptr) -> ^Entity {
 	append(&g_entities, e)
 
 	return e
+}
+
+// Removes `e` from the registry and frees it. Used when a placed item is picked
+// back up: its entity should no longer be reachable by the picker. The caller
+// must ensure no collision triangles still point at `e` before calling.
+remove :: proc(e: ^Entity) {
+	for other, i in g_entities {
+		if other == e {
+			ordered_remove(&g_entities, i)
+			break
+		}
+	}
+
+	free(e)
 }
 
 // Frees every entity and empties the registry. Call at shutdown, after the

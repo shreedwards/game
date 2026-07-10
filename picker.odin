@@ -3,12 +3,14 @@ package game
 import rl "vendor:raylib"
 
 import "entity"
+import "inventory"
 
-// Result of a pick: the entity under the cursor, where the ray hit it, and
-// whether anything was hit at all.
+// Result of a pick: the entity under the cursor, where the ray hit it, the
+// surface normal of the triangle it hit, and whether anything was hit at all.
 Pick :: struct {
 	entity: ^entity.Entity,
 	point:  rl.Vector3,
+	normal: rl.Vector3,
 	hit:    bool,
 }
 
@@ -39,7 +41,25 @@ pick_world :: proc(world: ^World, cam: rl.Camera) -> Pick {
 			best_dist   = hit.distance
 			best.entity = t.owner
 			best.point  = hit.point
+			best.normal = t.normal
 			best.hit    = true
+		}
+	}
+
+	// Placed items live outside world.tris (the inventory package can't reach into
+	// the World), so test their tris here too. They carry the same owner pointers,
+	// so a hit resolves to a PLACED_ITEM entity just like a ground or tree.
+	for placed in inventory.g_placed_items {
+		for &t in placed.tris {
+			hit := rl.GetRayCollisionTriangle(ray, t.a, t.b, t.c)
+
+			if hit.hit && hit.distance < best_dist {
+				best_dist   = hit.distance
+				best.entity = t.owner
+				best.point  = hit.point
+				best.normal = t.normal
+				best.hit    = true
+			}
 		}
 	}
 

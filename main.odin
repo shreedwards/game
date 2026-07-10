@@ -1,5 +1,6 @@
 package game
 
+import "vendor:stb/rect_pack"
 import "core:fmt"
 
 import rl "vendor:raylib"
@@ -29,6 +30,10 @@ main :: proc() {
 
 	grain := create_grain(rl.GetScreenWidth(), rl.GetScreenHeight())
 
+	// The held item, drawn in hand. Created after load_shaders so the item
+	// models can be wired to the shared sun.
+	viewmodel := create_viewmodel(rl.GetScreenWidth(), rl.GetScreenHeight())
+
 	setup_player()
 
 	rl.DisableCursor()
@@ -40,21 +45,62 @@ main :: proc() {
 			update_player(&world)
 		}
 
+		update_viewmodel(&viewmodel)
+
+		// The hand swings on every use, hit or miss; the item action only fires
+		// on a hit.
 		if rl.IsMouseButtonPressed(.LEFT) {
+			swing_viewmodel(&viewmodel)
+
 			pick := pick_world(&world, active_cam^)
 			if pick.hit {
-				hand := inventory.g_hotbar[inventory.g_hb_index]
+				held := inventory.g_hotbar[inventory.g_hb_index]
 
-				items.g_items[hand.id].primary(pick.entity)
+				if held != .NOTHING {
+					items.g_items[held].primary(pick.entity, pick.point)
+				}
 			}
 		}
 
 		if rl.IsMouseButtonPressed(.RIGHT) {
+			swing_viewmodel(&viewmodel)
+
 			pick := pick_world(&world, active_cam^)
 			if pick.hit {
-				hand := inventory.g_hotbar[inventory.g_hb_index]
+				held := inventory.g_hotbar[inventory.g_hb_index]
 
-				items.g_items[hand.id].secondary(pick.entity)
+				if held != .NOTHING {
+					items.g_items[held].secondary(pick.entity, pick.point)
+				}
+			}
+		}
+
+		if rl.IsKeyPressed(.Q) {
+			pick := pick_world(&world, active_cam^)
+
+			if pick.hit {
+				if pick.entity.kind == .GROUND {
+					inventory.place_item(pick.point, pick.normal)
+				}
+			}
+		}
+
+		if rl.IsKeyPressed(.E) {
+			pick := pick_world(&world, active_cam^)
+
+			if pick.hit {
+				if pick.entity.kind == .PLACED_ITEM {
+					item := cast(^inventory.Placed_Item) pick.entity.actual
+
+					inventory.pickup_item(item)
+				}
+			}
+		}
+
+		// Number keys 1-9 select hotbar slots 0-8.
+		for i in 0..<9 {
+			if rl.IsKeyPressed(rl.KeyboardKey(int(rl.KeyboardKey.ONE) + i)) {
+				inventory.select_slot(i)
 			}
 		}
 
@@ -69,12 +115,20 @@ main :: proc() {
 			dev_mode = !dev_mode
 		}
 
+		// The held item renders into its own target first (texture modes can't
+		// nest), then composites into the grain pass below.
+		render_viewmodel(&viewmodel)
+
 		// Render the scene into the supersampled off-screen target...
 		begin_grain(&grain)
 			rl.ClearBackground(rl.LIGHTGRAY)
 			rl.BeginMode3D(active_cam^)
 				draw_world(&world)
 			rl.EndMode3D()
+
+			// The held item goes over the world but inside the grain target, so
+			// it picks up the film grain and supersample resolve too.
+			composite_viewmodel(&viewmodel)
 		end_grain(&grain)
 
 		// ...then present it to the screen through the film-grain shader. HUD is
@@ -97,7 +151,9 @@ main :: proc() {
 		rl.EndDrawing()
 	}
 
+	unload_viewmodel(&viewmodel)
 	unload_grain(&grain)
+	inventory.unload_placed()
 	unload_world(&world)
 	items.unload_all_items()
 	texture.unload_textures()

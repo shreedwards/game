@@ -22,13 +22,16 @@ unload_all_items :: proc() {
 }
 
 Item_Id :: enum {
+	NOTHING,
 	ROCK
 }
 
-Action_Handler :: proc(target:^entity.Entity)
+Action_Handler :: proc(entity:^entity.Entity, point:rl.Vector3)
 
 Item :: struct {
 	model: rl.Model,
+	held_rot: rl.Vector3,
+	placed_rot: rl.Vector3,
 	primary: Action_Handler,
 	secondary: Action_Handler
 }

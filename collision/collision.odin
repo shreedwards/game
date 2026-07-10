@@ -105,6 +105,21 @@ translate_tris :: proc(tris: []Triangle, offset: rl.Vector3) {
 }
 
 
+// Applies affine matrix `m` to every triangle in `tris`, in place, recomputing
+// each normal from the transformed corners. Used to seat a model's local-space
+// collision tris at an arbitrary world orientation and position at once (where
+// translate_tris only handles the position).
+transform_tris :: proc(tris: []Triangle, m: rl.Matrix) {
+	for &t in tris {
+		t.a = rl.Vector3Transform(t.a, m)
+		t.b = rl.Vector3Transform(t.b, m)
+		t.c = rl.Vector3Transform(t.c, m)
+
+		t.normal = rl.Vector3Normalize(rl.Vector3CrossProduct(t.b - t.a, t.c - t.a))
+	}
+}
+
+
 // Derived from Ericson's Real-Time Collision Detection
 @(private="file")
 _closest_point_on_triangle :: proc(p, a, b, c: rl.Vector3) -> rl.Vector3 {
